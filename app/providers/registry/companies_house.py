@@ -23,6 +23,15 @@ COMPANY_NUMBER_RE = re.compile(
 _SUFFIXES = re.compile(r"\b(limited|ltd|plc|llp|l\.l\.p|uk|the|group|holdings)\b\.?", re.I)
 
 
+_LEGAL_SUFFIXES = re.compile(r"\b(limited|ltd|plc|llp|l\.l\.p|the)\b\.?", re.I)
+
+
+def strict_company_name(name: str) -> str:
+    """Only legal-form words removed; distinguishing words like 'group' or 'uk' are kept."""
+    name = _LEGAL_SUFFIXES.sub(" ", name.lower().replace("&", " and "))
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", name).split())
+
+
 def normalize_company_name(name: str) -> str:
     name = _SUFFIXES.sub(" ", name.lower().replace("&", " and "))
     return " ".join(re.sub(r"[^a-z0-9 ]", " ", name).split())
@@ -109,18 +118,23 @@ class CompaniesHouseClient:
         )
 
     async def match_by_name(self, name: str) -> RegistryRecord | None:
-        """Exact normalized-name match to exactly one ACTIVE company, else None.
+        """Exact name match to exactly one ACTIVE company, else None.
 
-        A dissolved company that merely shares a brand's name is usually unrelated, so a
-        name-only match never causes a rejection."""
+        Tried strictest first: legal-suffix-only normalisation ('Mulberry Bush Nursery Group' must not collide
+        with 'Mulberry Bush Nursery Ltd'), then the looser normalisation, then spacing-insensitive ('HempWell'
+        vs 'HEMP WELL LIMITED'). The first level with any exact active match decides; more than one is ambiguous
+        and returns None. A dissolved company that merely shares a brand's name never causes a rejection."""
         resp = await request_with_retry(self.client, "GET", "/search/companies", params={"q": name, "items_per_page": 20})
         resp.raise_for_status()
-        target = normalize_company_name(name)
-        exact = [i for i in resp.json().get("items", []) if normalize_company_name(i.get("title", "")) == target]
-        active = [i for i in exact if i.get("company_status") == "active"]
-        if len(active) != 1:
-            return None
-        return await self.profile(active[0]["company_number"])
+        items = [i for i in resp.json().get("items", []) if i.get("company_status") == "active"]
+        for norm in (strict_company_name, normalize_company_name, lambda n: normalize_company_name(n).replace(" ", "")):
+            target = norm(name)
+            hits = {i["company_number"] for i in items if norm(i.get("title", "")) == target}
+            if len(hits) == 1:
+                return await self.profile(hits.pop())
+            if hits:
+                return None
+        return None
 
     async def match_by_officer(self, first: str, last: str, brand_words: set[str]) -> RegistryRecord | None:
         """The one active company where this person (already quote-verified as working at the target) is a

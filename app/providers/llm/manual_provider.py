@@ -71,6 +71,10 @@ def check_answer(task: dict, answer: dict) -> list[str]:
     instead of being silently dropped later. (The pipeline re-verifies everything against full page text.)"""
     from app.core.evidence_verify import phrase_near_quote, quote_in_text
 
+    if task["step"] == "DraftOut":
+        from app.pipeline.drafts import MAX_BODY_WORDS
+        words = len(answer.get("body", "").split())
+        return [f"draft body is {words} words; the pipeline rejects more than {MAX_BODY_WORDS}"] if words > MAX_BODY_WORDS else []
     if task["step"] != "ExtractOut":
         return []
     sources = dict(re.findall(r'<source url="([^"]+)">\n(.*?)\n</source>', task["data"], re.S))

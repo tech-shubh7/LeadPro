@@ -1,0 +1,37 @@
+# Example pilot job. ICP and signal playbook are written by hand for pilots.
+client:
+  key: example-3pl
+  name: Example Fulfilment Ltd
+  website: https://example-fulfilment.co.uk
+ask: "UK e-commerce brands that are scaling and may need outsourced warehousing and fulfilment"
+countries: [GB]
+count: 5
+freshness_days: 90
+personalized_email: true
+include_icp_only: true
+cost_cap_inr: 50
+max_search_queries: 30
+icp:
+  industries: [e-commerce, DTC consumer brands, online retail]
+  regions: [United Kingdom]
+  employee_range: "10-250"
+  exclude: [marketplaces, 3PL/fulfilment providers, recruitment agencies]
+playbook:
+  signals:
+    - type: hiring_ops
+      description: Hiring warehouse, operations or fulfilment roles
+      strength: medium  # may mean building in-house capacity rather than outsourcing
+      kind: search
+      queries:
+        - '"fulfilment" OR "warehouse" hiring "e-commerce brand" UK site:co.uk'
+        - '"operations manager" "DTC brand" London hiring'
+    - type: funding_or_expansion
+      description: Raised funding, opened a new site, or launched in new UK retailers
+      strength: high
+      kind: news
+      queries:
+        - 'UK DTC brand raises funding'
+        - 'British e-commerce brand expands into Boots OR Selfridges OR Sainsbury''s'
+  buyer_titles: [Operations Director, Head of Operations, Supply Chain, Logistics, COO, Founder, Managing Director]
+  negative: [already runs a large in-house warehouse network, is itself a logistics provider]
+suppress_domains: []

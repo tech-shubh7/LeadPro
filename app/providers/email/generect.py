@@ -36,7 +36,7 @@ class GenerectFinder:
         self.settings = get_settings()
         self.cost = cost
         self.client = client or httpx.AsyncClient(
-            base_url=BASE_URL, timeout=60, headers={"Authorization": f"Token {self.settings.generect_api_key}"}
+            base_url=BASE_URL, timeout=150, headers={"Authorization": f"Token {self.settings.generect_api_key}"}
         )
 
     def _inr(self, usd: float) -> float:

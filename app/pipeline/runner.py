@@ -7,6 +7,7 @@ than leaving it stuck in a running status forever.
 import asyncio
 import logging
 import math
+import re
 import traceback
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -19,7 +20,9 @@ from app.core.cost import CostCapExceeded, CostTracker
 from app.core.fetcher import Fetcher
 from app.core.normalize import normalize_domain
 from app.countries import get_pack
-from app.countries.base import REGISTRY_MATCH_LEGAL_NAME, REGISTRY_MATCH_NAME, REGISTRY_MATCH_NUMBER
+from app.countries.base import (
+    REGISTRY_MATCH_LEGAL_NAME, REGISTRY_MATCH_NAME, REGISTRY_MATCH_NUMBER, REGISTRY_MATCH_OFFICER,
+)
 from app.db import session_scope
 from app.models.enums import AliveProof, JobStatus, LeadTier
 from app.models.tables import Job
@@ -35,7 +38,7 @@ from app.pipeline.score import fresh_signals, score
 from app.providers.email.generect import GenerectFinder
 from app.providers.llm.manual_provider import ManualLLMProvider
 from app.providers.llm.openai_provider import OpenAIProvider
-from app.providers.registry.companies_house import CompaniesHouseClient
+from app.providers.registry.companies_house import CompaniesHouseClient, normalize_company_name
 from app.providers.search.serper import SerperClient
 
 log = logging.getLogger("leadpro")
@@ -91,7 +94,13 @@ def default_deps(cost: CostTracker, countries: list[str], llm_mode: str | None =
                 CompaniesHouseClient() if "GB" in countries else None)
 
 
-async def _registry_record(deps: Deps, pack, bundle, company_name: str):
+def _brand_words(company_name: str, domain: str) -> set[str]:
+    generic = {"group", "company", "limited", "ltd", "holdings", "services", "solutions", "and", "the", "uk"}
+    words = set(normalize_company_name(company_name).split()) | {re.sub(r"[^a-z0-9]", "", domain.split(".")[0].lower())}
+    return {w for w in words if len(w) >= 4 and w not in generic}
+
+
+async def _registry_record(deps: Deps, pack, bundle, company_name: str, people=()):
     """Returns (record, how it was matched) or (None, None)."""
     if deps.registry is None or pack.registry_name != "companies_house":
         return None, None
@@ -103,6 +112,10 @@ async def _registry_record(deps: Deps, pack, bundle, company_name: str):
             return record, REGISTRY_MATCH_LEGAL_NAME
     if record := await deps.registry.match_by_name(company_name):
         return record, REGISTRY_MATCH_NAME
+    words = _brand_words(company_name, bundle.domain)
+    for person in list(people)[:3]:  # people are quote-verified as working at the target
+        if record := await deps.registry.match_by_officer(person.first_name, person.last_name, words):
+            return record, REGISTRY_MATCH_OFFICER
     return None, None
 
 
@@ -121,7 +134,7 @@ async def process_candidate(c: Candidate, spec: JobSpec, deps: Deps, today: date
     staffing_wanted = any(w in spec.ask.lower() for w in STAFFING_WORDS)
     if ext.is_staffing and not staffing_wanted:
         raise Rejected("recruitment/staffing firm")
-    record, registry_match = await _registry_record(deps, pack, bundle, ext.company_name)
+    record, registry_match = await _registry_record(deps, pack, bundle, ext.company_name, ext.people)
     if record and registry_match == REGISTRY_MATCH_NUMBER:
         key = (record.registry, record.registry_id)
         if key in guards.claimed_registry:  # check-and-claim has no await between: safe under asyncio

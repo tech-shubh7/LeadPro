@@ -1,11 +1,14 @@
 """Step 4: decision-makers (from verified page evidence + registry officers) and verified emails."""
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 
 import dns.asyncresolver
 import dns.exception
+import dns.resolver
 
+from app.core.cost import CostCapExceeded
 from app.core.normalize import email_matches_person
 from app.models.enums import BuyerRole, EmailSource, EmailVerdict
 from app.pipeline.extract import Extraction
@@ -14,6 +17,8 @@ from app.providers.registry.companies_house import Officer
 
 # A "director" of art/design/creative/marketing content is not the budget holder for an ops purchase.
 _NON_BUYER = re.compile(r"\b(art|creative|design|content|social|brand|marketing|non-executive|non executive)\s+director\b")
+log = logging.getLogger("leadpro")
+
 ECONOMIC_TITLES = ("founder", "owner", "ceo", "chief executive", "managing director", "md", "director", "partner", "president")
 
 
@@ -37,10 +42,12 @@ _mx_cache: dict[str, bool] = {}
 async def has_mx(domain: str) -> bool:
     if domain not in _mx_cache:
         try:
-            answer = await dns.asyncresolver.resolve(domain, "MX", lifetime=5)
+            answer = await dns.asyncresolver.resolve(domain, "MX", lifetime=10)
             _mx_cache[domain] = len(answer) > 0
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            _mx_cache[domain] = False  # definitively no mailbox
         except (dns.exception.DNSException, OSError):
-            _mx_cache[domain] = False
+            return True  # timeout/transient: don't conclude "no mailbox"; the finder bills only found emails
     return _mx_cache[domain]
 
 
@@ -104,8 +111,15 @@ async def attach_emails(people: list[DecisionMaker], site_emails: list[str], dom
     if not await has_mx(domain):  # no mailbox can exist; don't pay for lookups
         return
     pending = [dm for dm in people if dm.email is None]
-    results = await asyncio.gather(*(find_with_waterfall(finders, dm.first_name, dm.last_name, domain) for dm in pending))
+    results = await asyncio.gather(*(find_with_waterfall(finders, dm.first_name, dm.last_name, domain) for dm in pending),
+                                   return_exceptions=True)
     for dm, res in zip(pending, results):
+        if isinstance(res, CostCapExceeded):
+            raise res
+        if isinstance(res, Exception):  # one slow/failed lookup must not lose the whole lead
+            log.warning("email lookup failed for %s %s @ %s: %s", dm.first_name, dm.last_name, domain, type(res).__name__)
+            dm.finder_status = f"error: {type(res).__name__}"
+            continue
         if res is None:
             continue
         if res.email and res.email in suppressed_emails:

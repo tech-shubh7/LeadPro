@@ -122,6 +122,35 @@ class CompaniesHouseClient:
             return None
         return await self.profile(active[0]["company_number"])
 
+    async def match_by_officer(self, first: str, last: str, brand_words: set[str]) -> RegistryRecord | None:
+        """The one active company where this person (already quote-verified as working at the target) is a
+        current officer AND whose registered name shares a distinctive word with the brand or domain.
+        Brand names often differ from registered names; the officer link is what ties them together."""
+        resp = await request_with_retry(self.client, "GET", "/search/officers",
+                                        params={"q": f"{first} {last}", "items_per_page": 50})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        numbers: set[str] = set()
+        same_name = [i for i in resp.json().get("items", [])
+                     if parse_officer_name(i.get("title", "")) == (first.title(), last.title())][:15]
+        for item in same_name:
+            link = (item.get("links") or {}).get("self")
+            if not link:
+                continue
+            appts = await request_with_retry(self.client, "GET", link, params={"items_per_page": 50})
+            if appts.status_code != 200:
+                continue
+            for a in appts.json().get("items", []):
+                company = a.get("appointed_to") or {}
+                words = set(normalize_company_name(company.get("company_name", "")).split())
+                if (not a.get("resigned_on") and company.get("company_status") == "active"
+                        and company.get("company_number") and words & brand_words):
+                    numbers.add(company["company_number"])
+        if len(numbers) != 1:
+            return None  # none, or ambiguous: never guess
+        return await self.profile(numbers.pop())
+
     async def decision_officers(self, number: str) -> list[Officer]:
         resp = await request_with_retry(self.client, "GET", f"/company/{number}/officers", params={"items_per_page": 50})
         if resp.status_code == 404:

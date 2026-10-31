@@ -109,6 +109,9 @@ class FakeRegistry:
     async def match_by_name(self, name):
         return None
 
+    async def match_by_officer(self, first, last, words):
+        return None
+
     async def decision_officers(self, number):
         return []
 

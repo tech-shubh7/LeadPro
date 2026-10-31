@@ -77,8 +77,16 @@ class RunSummary:
     outputs: dict = field(default_factory=dict)
 
 
-def default_deps(cost: CostTracker, countries: list[str]) -> Deps:
-    llm = ManualLLMProvider(cost) if get_settings().llm_mode == "manual" else OpenAIProvider(cost)
+LLM_MODES = ("openai", "manual")
+
+
+def default_deps(cost: CostTracker, countries: list[str], llm_mode: str | None = None) -> Deps:
+    """llm_mode 'openai' calls the API; 'manual' writes each LLM step to work/llm_tasks for an operator
+    (or Claude Code) to answer. Everything after the LLM (quote checks, dates, gates) is identical."""
+    mode = llm_mode or get_settings().llm_mode
+    if mode not in LLM_MODES:
+        raise ValueError(f"llm mode must be one of {LLM_MODES}, got {mode!r}")
+    llm = ManualLLMProvider(cost) if mode == "manual" else OpenAIProvider(cost)
     return Deps(SerperClient(cost), llm, Fetcher(), [GenerectFinder(cost)],
                 CompaniesHouseClient() if "GB" in countries else None)
 
@@ -168,11 +176,12 @@ async def process_candidate(c: Candidate, spec: JobSpec, deps: Deps, today: date
     return lead
 
 
-async def run_job(spec: JobSpec, out_dir: Path, deps: Deps | None = None, today: date | None = None) -> RunSummary:
+async def run_job(spec: JobSpec, out_dir: Path, deps: Deps | None = None, today: date | None = None,
+                  llm_mode: str | None = None) -> RunSummary:
     settings = get_settings()
     today = today or date.today()
     cost = CostTracker(spec.cost_cap_inr or settings.max_cost_per_job_inr)
-    deps = deps or default_deps(cost, spec.countries)
+    deps = deps or default_deps(cost, spec.countries, llm_mode)
     country = spec.countries[0]
 
     with session_scope() as s:

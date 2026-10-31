@@ -6,6 +6,7 @@ signals never rely on it alone: the article page date is preferred when the page
 from dataclasses import dataclass
 
 import asyncio
+from datetime import date, datetime
 import hashlib
 import json
 from pathlib import Path
@@ -30,6 +31,7 @@ class SearchHit:
     date_text: str | None
     kind: str  # "search" | "news"
     query: str
+    searched_on: str | None = None  # ISO date of the search: relative dates ("2 days ago") count from here
 
 
 class SerperClient:
@@ -47,7 +49,8 @@ class SerperClient:
         body = {"q": q, "gl": gl, "num": num} | ({"tbs": tbs} if tbs else {})
         cache = self._cache_path(body, kind) if self.settings.is_dev else None
         if cache and cache.exists():  # dev only: identical query already paid for
-            return [SearchHit(**h) for h in json.loads(cache.read_text())]
+            searched = datetime.fromtimestamp(cache.stat().st_mtime).date().isoformat()  # older cache files lack it
+            return [SearchHit(**({"searched_on": searched} | h)) for h in json.loads(cache.read_text())]
         hits = await self._query_live(q, body, kind, num)
         if cache:
             cache.parent.mkdir(parents=True, exist_ok=True)
@@ -71,6 +74,7 @@ class SerperClient:
                 date_text=item.get("date"),
                 kind=kind,
                 query=q,
+                searched_on=date.today().isoformat(),
             )
             for item in resp.json().get(_SECTION[kind], [])
             if item.get("link")

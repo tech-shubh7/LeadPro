@@ -152,15 +152,15 @@ def save_lead(session: Session, job: Job, lead: LeadResult, country: str) -> dic
     for f in e.facts:
         session.add(Evidence(company_id=company.id, job_id=job.id, kind=EvidenceKind.FIRMOGRAPHIC, claim=f.claim,
                              source_url=f.source_url, quote=f.quote, quote_verified=True))
-    for s in e.signals:
+    for sig in e.signals:
         session.add(Evidence(
-            company_id=company.id, job_id=job.id, kind=EvidenceKind.SIGNAL, signal_type=s.signal_type, claim=s.claim,
-            source_url=s.source_url, quote=s.quote, quote_verified=True,
-            evidence_date=s.trusted_date.value if s.trusted_date else None,
-            date_source=s.trusted_date.source if s.trusted_date else None,
-            date_precision=s.trusted_date.precision if s.trusted_date else None,
-            event_date=s.event_date, event_date_quote=s.event_date_quote or None,
-            event_key=(s.event_key or None) and s.event_key[:120], corroborating_urls=s.corroborating_urls,
+            company_id=company.id, job_id=job.id, kind=EvidenceKind.SIGNAL, signal_type=sig.signal_type, claim=sig.claim,
+            source_url=sig.source_url, quote=sig.quote, quote_verified=True,
+            evidence_date=sig.trusted_date.value if sig.trusted_date else None,
+            date_source=sig.trusted_date.source if sig.trusted_date else None,
+            date_precision=sig.trusted_date.precision if sig.trusted_date else None,
+            event_date=sig.event_date, event_date_quote=sig.event_date_quote or None,
+            event_key=(sig.event_key or None) and sig.event_key[:120], corroborating_urls=sig.corroborating_urls,
         ))
 
     contact_ids = {}
@@ -169,19 +169,23 @@ def save_lead(session: Session, job: Job, lead: LeadResult, country: str) -> dic
             session, Contact, {"company_id": company.id, "first_name": p.first_name, "last_name": p.last_name},
             job_title=p.job_title, person_source_url=p.source_url, person_source_quote=p.source_quote,
         )
-        contact.buyer_role = p.buyer_role
+        contact.job_title, contact.buyer_role = p.job_title, p.buyer_role
         contact.email_verdict = p.email_verdict
         contact.email_finder_status = p.finder_status
         if p.email:
             contact.email, contact.email_source, contact.email_verified_at = p.email, p.email_source, datetime.now(UTC)
+        elif contact.email is not None:
+            # A previously verified address that no longer verifies is dropped, not kept beside a non-valid
+            # verdict: only currently verified emails are stored (and the DB enforces it).
+            contact.email, contact.email_source, contact.email_verified_at = None, None, None
         session.flush()
         contact_ids[(p.first_name, p.last_name)] = contact.id
 
-    s = lead.score
+    sc = lead.score
     _get_or_create(
         session, JobLead, {"job_id": job.id, "company_id": company.id},
-        fit_score=s.fit, intent_score=s.intent, timing_score=s.timing, total_score=s.total,
-        why_summary=s.why, outreach_angle=s.angle, risks=s.risks, alive_proofs=lead.alive_proofs,
+        fit_score=sc.fit, intent_score=sc.intent, timing_score=sc.timing, total_score=sc.total,
+        why_summary=sc.why, outreach_angle=sc.angle, risks=sc.risks, alive_proofs=lead.alive_proofs,
         outreach_allowed=lead.outreach_allowed, outreach_reason=lead.outreach_reason,
         status=LeadStatus.QUALIFIED if lead.verified_people else LeadStatus.QUALIFIED_NO_CONTACT, lead_tier=lead.tier,
         email_drafts=[{"contact_id": contact_ids[k], "subject": d.subject, "body": d.body, "evidence_ids": d.evidence_ids}

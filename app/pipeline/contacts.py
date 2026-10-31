@@ -1,5 +1,6 @@
 """Step 4: decision-makers (from verified page evidence + registry officers) and verified emails."""
 import asyncio
+import re
 from dataclasses import dataclass
 
 import dns.asyncresolver
@@ -11,6 +12,8 @@ from app.pipeline.extract import Extraction
 from app.providers.email import EmailFinder, find_with_waterfall
 from app.providers.registry.companies_house import Officer
 
+# A "director" of art/design/creative/marketing content is not the budget holder for an ops purchase.
+_NON_BUYER = re.compile(r"\b(art|creative|design|content|social|brand|marketing|non-executive|non executive)\s+director\b")
 ECONOMIC_TITLES = ("founder", "owner", "ceo", "chief executive", "managing director", "md", "director", "partner", "president")
 
 
@@ -41,12 +44,18 @@ async def has_mx(domain: str) -> bool:
     return _mx_cache[domain]
 
 
+def _has_term(title: str, term: str) -> bool:
+    """Whole-word match: 'COO' must not match 'Coordinator', nor 'partner' match 'Partnerships'."""
+    return re.search(rf"(?<![a-z]){re.escape(term.lower())}(?![a-z])", title) is not None
+
+
 def _title_rank(title: str, buyer_titles: list[str]) -> tuple[int, BuyerRole] | None:
     t = title.lower()
+    economic = any(_has_term(t, e) for e in ECONOMIC_TITLES) and not _NON_BUYER.search(t)
     for i, wanted in enumerate(buyer_titles):
-        if wanted.lower() in t:
-            return i, BuyerRole.FUNCTIONAL_OWNER if not any(e in t for e in ECONOMIC_TITLES) else BuyerRole.ECONOMIC_BUYER
-    if any(e in t for e in ECONOMIC_TITLES):
+        if _has_term(t, wanted):
+            return i, BuyerRole.ECONOMIC_BUYER if economic else BuyerRole.FUNCTIONAL_OWNER
+    if economic:
         return len(buyer_titles), BuyerRole.ECONOMIC_BUYER
     return None
 
@@ -88,7 +97,7 @@ async def attach_emails(people: list[DecisionMaker], site_emails: list[str], dom
             continue
         printed = [e for e in site_emails if email_matches_person(e, dm.first_name, dm.last_name) and e not in suppressed_emails]
         if printed:
-            [res] = (await finders[0].validate(printed[:1])) or [None]
+            res = next((r for r in await finders[0].validate(printed[:1]) if r.email == printed[0]), None)
             if res and res.verdict == EmailVerdict.VALID:
                 dm.email, dm.email_source, dm.email_verdict, dm.finder_status = res.email, EmailSource.COMPANY_PAGE, res.verdict, res.raw_status
                 continue

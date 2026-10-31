@@ -16,9 +16,16 @@ API keys (`.env`): `SERPER_API_KEY`, `OPENAI_API_KEY`, `COMPANIES_HOUSE_API_KEY`
 ## Run a job
 
 ```bash
-uv run leadpro validate jobs/example_uk.yaml   # free check of the job file
-uv run leadpro run jobs/example_uk.yaml        # writes output/<client>_job<N>_<date>.xlsx + CSVs
+uv run leadpro validate jobs/example_uk.yaml          # free check of the job file
+uv run leadpro doctor --llm manual                    # database + keys for the chosen mode
+uv run leadpro run jobs/example_uk.yaml --llm openai --fresh   # writes output/<client>_job<N>_<date>.xlsx + CSVs
 ```
+
+There are two workflows, both described in [docs/WORKFLOWS.md](docs/WORKFLOWS.md):
+- **`--llm openai`** needs `OPENAI_API_KEY` and runs unattended.
+- **`--llm manual`** needs no OpenAI key. The LLM steps are answered as task files, by Claude Code (`/leadpro-manual jobs/x.yaml`) or a person (`leadpro tasks / task / answer`).
+
+`--fresh` ignores the dev caches; use it for every client or demo run.
 
 Outputs:
 - **Leads**: qualified companies with at least one verified decision-maker email (one row per person), plus an optional personalized email.

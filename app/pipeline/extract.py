@@ -126,7 +126,8 @@ def _signal_date(url: str, bundle: ResearchBundle, today: date) -> TrustedDate |
         return d
     for hit in bundle.seed_hits:
         if hit.link == url:
-            return parse_search_date(hit.date_text, today)
+            searched_on = date.fromisoformat(hit.searched_on) if hit.searched_on else today
+            return parse_search_date(hit.date_text, searched_on)
     return None
 
 

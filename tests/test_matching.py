@@ -139,7 +139,7 @@ def test_name_match_keeps_distinguishing_words_like_group_and_ignores_spacing():
         {"title": "MULBERRY BUSH NURSERY GROUP LIMITED", "company_number": "07279744", "company_status": "active"},
         {"title": "MULBERRY BUSH NURSERY LIMITED", "company_number": "01111111", "company_status": "active"},
         {"title": "HEMP WELL LIMITED", "company_number": "11014456", "company_status": "active"}]})
-    for number in ("07279744", "11014456"):
+    for number in ("07279744", "11014456", "01111111"):
         respx.get(f"{CH}/company/{number}").respond(200, json={"company_number": number, "company_name": "X", "type": "ltd",
                                                                "company_status": "active"})
     assert asyncio.run(_ch().match_by_name("Mulberry Bush Nursery Group")).registry_id == "07279744"

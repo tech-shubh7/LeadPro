@@ -61,6 +61,7 @@ class JobSpec(BaseModel):
     suppress_domains: list[str] = Field(default_factory=list)
     sender: SenderSpec | None = None
     seeds: list[SeedSpec] = Field(default_factory=list)
+    seeds_only: bool = False  # research only the seeds (outside research already found them); skip discovery
     max_search_queries: int = Field(default=30, ge=1, le=300)  # discovery budget (planned + resolution)
 
     @field_validator("countries")

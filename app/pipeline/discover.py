@@ -193,8 +193,8 @@ async def discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exc
             by_domain[domain] = Candidate(domain=domain, name_hint=seed.name, prior=1.0, triage_note=seed.note,
                                           category=seed.category)
             by_name[seed.name.lower()] = by_domain[domain]
-    if len(by_domain) >= limit:
-        return list(by_domain.values())[:limit]
+    if spec.seeds_only or len(by_domain) >= limit:
+        return list(by_domain.values()) if spec.seeds_only else list(by_domain.values())[:limit]
     queue: list[PlannedQuery] = [PlannedQuery(signal_type=s.type, kind=s.kind, query=q, rationale="playbook")
                                  for s in spec.playbook.signals for q in s.queries]
 

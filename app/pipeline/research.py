@@ -9,7 +9,7 @@ from lxml import html as lxml_html
 from app.core.fetcher import Fetcher, FetchResult, visible_text
 from app.core.normalize import PhoneHit, extract_emails, extract_phones, normalize_domain
 from app.pipeline.discover import Candidate
-from app.providers.registry.companies_house import find_company_numbers
+from app.providers.registry.companies_house import find_company_numbers, find_legal_names
 
 MAX_SITE_PAGES = 8
 MAX_SEED_ARTICLES = 3
@@ -38,6 +38,7 @@ class ResearchBundle:
     emails: list[str] = field(default_factory=list)
     phones: list[PhoneHit] = field(default_factory=list)
     company_numbers: list[str] = field(default_factory=list)
+    legal_names: list[str] = field(default_factory=list)
 
     @property
     def website_live(self) -> bool:
@@ -117,4 +118,5 @@ async def research(candidate: Candidate, fetcher: Fetcher, phone_region: str,
     links_only = " ".join(re.findall(r'(?:href=["\'](?:tel:|https?://(?:wa\.me|api\.whatsapp\.com)[^"\']*))([^"\']*)', blob_html))
     bundle.phones = extract_phones(blob_text + "\n" + links_only + "\n" + " ".join(re.findall(r"wa\.me/\+?\d{8,15}", blob_html)), phone_region)
     bundle.company_numbers = find_company_numbers(blob_text)
+    bundle.legal_names = find_legal_names(blob_text, candidate.domain)
     return bundle

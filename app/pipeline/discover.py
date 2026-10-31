@@ -109,11 +109,20 @@ async def resolve_domain(serper: SerperClient, name: str, gl: str, category: str
     if not token:
         return None
     query = f'"{name}" {category} official website' if category else f'"{name}" official website'
-    for h in await serper.query(query, gl=gl, num=10):
-        domain = normalize_domain(h.link)
-        if domain and not is_third_party(domain) and (token in domain.replace("-", "") or token in h.title.lower()):
-            return domain
-    return None
+    named = [h for h in await serper.query(query, gl=gl, num=10)
+             if (d := normalize_domain(h.link)) and not is_third_party(d)
+             and (token in d.replace("-", "") or token in h.title.lower())]
+    # Prefer a result that also describes the right kind of business ('TRIP' the drinks brand, not trip.com).
+    words = _category_words(category)
+    on_topic = [h for h in named if any(w in f"{h.title} {h.snippet}".lower() for w in words)]
+    best = (on_topic or named or [None])[0]
+    return normalize_domain(best.link) if best else None
+
+
+def _category_words(category: str | None) -> list[str]:
+    generic = {"brand", "brands", "company", "business", "online", "retailer", "shop", "store", "maker", "startup"}
+    return [w[:-1] if w.endswith("s") else w for w in re.findall(r"[a-z]{4,}", (category or "").lower())
+            if w not in generic]
 
 
 def _spec_context(spec: JobSpec) -> str:

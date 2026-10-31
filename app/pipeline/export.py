@@ -159,8 +159,9 @@ def write_outputs(leads: list[LeadResult], spec: JobSpec, today: date, out_dir: 
         *([f"'{ICP_SHEET}' sheet (lead_tier=icp_only): active registered companies that fit the ICP strongly but "
            "showed no current signal strong enough to qualify. Not finding a public signal does not mean there is "
            "no need; it means none was found. No outreach drafts are written for them."] if spec.include_icp_only else []),
-        "registry_match: company_number_on_site = the number printed on the company's own pages; exact_name = the only "
-        "active company with exactly this name.",
+        "registry_match: company_number_on_site = the number printed on the company's own pages; legal_name_on_site = the "
+        "registered name printed on its own pages matched exactly one active company; exact_name = the only active "
+        "company with exactly the brand name.",
         "outreach_allowed: UK = active company/LLP on Companies House (PECR corporate subscriber); other rules per country.",
     ):
         ws.append([line])

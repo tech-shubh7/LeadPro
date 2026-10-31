@@ -23,8 +23,9 @@ playbook:
       strength: medium  # may mean building in-house capacity rather than outsourcing
       kind: search
       queries:
-        - '"fulfilment" OR "warehouse" hiring "e-commerce brand" UK site:co.uk'
-        - '"operations manager" "DTC brand" London hiring'
+        # aimed at the brands' own careers pages; job boards and agencies only name the recruiter
+        - 'inurl:careers "our brand" "warehouse" OR "fulfilment" UK -recruitment -agency -indeed -reed -totaljobs'
+        - '"join our team" "operations" "our products" e-commerce site:co.uk -recruitment -jobs -vacancies.co.uk'
     - type: funding_or_expansion
       description: Raised funding, opened a new site, or launched in new UK retailers
       strength: high

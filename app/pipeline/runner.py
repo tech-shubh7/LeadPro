@@ -19,7 +19,7 @@ from app.core.cost import CostCapExceeded, CostTracker
 from app.core.fetcher import Fetcher
 from app.core.normalize import normalize_domain
 from app.countries import get_pack
-from app.countries.base import REGISTRY_MATCH_NAME, REGISTRY_MATCH_NUMBER
+from app.countries.base import REGISTRY_MATCH_LEGAL_NAME, REGISTRY_MATCH_NAME, REGISTRY_MATCH_NUMBER
 from app.db import session_scope
 from app.models.enums import AliveProof, JobStatus, LeadTier
 from app.models.tables import Job
@@ -90,6 +90,9 @@ async def _registry_record(deps: Deps, pack, bundle, company_name: str):
     for number in bundle.company_numbers:  # printed company number: exact, best match
         if record := await deps.registry.profile(number):
             return record, REGISTRY_MATCH_NUMBER
+    for name in bundle.legal_names:  # registered name printed on its own pages; brand names often differ
+        if record := await deps.registry.match_by_name(name):
+            return record, REGISTRY_MATCH_LEGAL_NAME
     if record := await deps.registry.match_by_name(company_name):
         return record, REGISTRY_MATCH_NAME
     return None, None

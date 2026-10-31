@@ -39,6 +39,28 @@ def find_company_numbers(text: str) -> list[str]:
     return seen
 
 
+LEGAL_NAME_RE = re.compile(
+    r"((?:[A-Z][A-Za-z0-9&.'\u2019-]*\s+){1,6})(Limited|LIMITED|Ltd|LTD|LLP|PLC|plc)\b")
+
+
+_BOILERPLATE = re.compile(r"^(?:(?:all|rights|reserved|copyright|registered|company|website|operated|by|is|a|trading|as)\s+)+", re.I)
+
+
+def find_legal_names(text: str, domain: str) -> list[str]:
+    """Registered names printed on a company's own pages ('(c) 2026 Doughlicious Limited') that belong to
+    that site's domain. A name unrelated to the domain (a supplier, an agency credit) is ignored, since an
+    exact match to it would attach the wrong company and its directors."""
+    label = re.sub(r"[^a-z0-9]", "", domain.split(".")[0].lower())
+    out: list[str] = []
+    for m in LEGAL_NAME_RE.finditer(text):
+        name = f"{_BOILERPLATE.sub('', m.group(1)).strip()} {m.group(2)}"
+        compact = normalize_company_name(name).replace(" ", "")
+        related = len(label) >= 4 and (label in compact or (len(compact) >= 5 and compact in label))
+        if related and name not in out:
+            out.append(name)
+    return out[:3]
+
+
 @dataclass(frozen=True)
 class Officer:
     first_name: str

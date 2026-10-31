@@ -12,6 +12,24 @@ class ClientSpec(BaseModel):
     website: str | None = None
 
 
+class SenderSpec(BaseModel):
+    """Who the outreach is from. `why_choose` must be true, checkable statements: drafts may use only these
+    (plus the prospect's verified evidence), never invented credentials."""
+    name: str
+    offer: str  # one line: what is sold
+    why_choose: list[str] = Field(default_factory=list)
+    signature: str = ""
+
+
+class SeedSpec(BaseModel):
+    """A company nominated by outside research. It still goes through every check (live fetch, quotes,
+    dates, registry, verified email); seeding only decides what gets researched."""
+    domain: str
+    name: str
+    category: str | None = None
+    note: str = ""
+
+
 class SignalSpec(BaseModel):
     type: str
     description: str
@@ -41,6 +59,8 @@ class JobSpec(BaseModel):
     icp: dict
     playbook: Playbook
     suppress_domains: list[str] = Field(default_factory=list)
+    sender: SenderSpec | None = None
+    seeds: list[SeedSpec] = Field(default_factory=list)
     max_search_queries: int = Field(default=30, ge=1, le=300)  # discovery budget (planned + resolution)
 
     @field_validator("countries")

@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     usd_to_inr: float = 88.0
     overfetch_factor: float = 4.0
     discovery_rounds: int = 3  # plan -> search -> triage rounds
+    discovery_queries_per_round: int = 8
     triage_min_fit: int = 5  # 0-10 ICP fit from snippet needed to become a candidate
     company_news_queries: int = 1  # per-candidate targeted news search (multi-source evidence)
     research_concurrency: int = 5

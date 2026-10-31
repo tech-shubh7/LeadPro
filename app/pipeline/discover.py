@@ -187,12 +187,20 @@ async def discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exc
     stats: list[QueryStat] = []
     by_name: dict[str, Candidate] = {}
     by_domain: dict[str, Candidate] = {}
+    for seed in spec.seeds:  # researched first; still subject to every downstream check
+        domain = normalize_domain(seed.domain)
+        if domain and domain not in exclude and domain not in by_domain:
+            by_domain[domain] = Candidate(domain=domain, name_hint=seed.name, prior=1.0, triage_note=seed.note,
+                                          category=seed.category)
+            by_name[seed.name.lower()] = by_domain[domain]
+    if len(by_domain) >= limit:
+        return list(by_domain.values())[:limit]
     queue: list[PlannedQuery] = [PlannedQuery(signal_type=s.type, kind=s.kind, query=q, rationale="playbook")
                                  for s in spec.playbook.signals for q in s.queries]
 
     for _round in range(settings.discovery_rounds):
         if not queue:
-            queue = await plan_queries(spec, llm, stats, n=min(8, budget))
+            queue = await plan_queries(spec, llm, stats, n=min(settings.discovery_queries_per_round, budget))
         batch, queue = queue[:budget], []
         if not batch:
             break

@@ -89,3 +89,28 @@ def test_openai_mode_without_a_key_fails_preflight(monkeypatch):
     checks = dict((msg.split(" ")[0], ok) for ok, msg in _preflight("openai", ["GB"]))
     assert checks["OPENAI_API_KEY"] is False
     assert all(ok for ok, msg in _preflight("manual", ["GB"]) if "OPENAI" in msg)
+
+
+def test_seeded_companies_are_researched_first_and_respect_exclusions():
+    import asyncio
+
+    from app.pipeline.discover import discover
+    from app.pipeline.jobspec import JobSpec
+
+    spec = JobSpec.model_validate({"client": {"key": "k", "name": "n"}, "ask": "a", "count": 1, "icp": {},
+                                   "playbook": {"signals": [], "buyer_titles": ["CEO"]},
+                                   "seeds": [{"domain": "https://www.acme.co.uk/x", "name": "Acme"},
+                                             {"domain": "gone.co.uk", "name": "Gone"}]})
+    found = asyncio.run(discover(spec, serper=None, llm=None, exclude={"gone.co.uk"}, limit=1))
+    assert [c.domain for c in found] == ["acme.co.uk"]
+
+
+def test_draft_numbers_may_come_only_from_evidence_or_the_senders_own_points():
+    from app.pipeline.drafts import DraftOut, draft_is_grounded
+
+    listing = {"E1": "[E1] (funding, dated 2026-10-01) Raised a seed round | quote: \"raised a seed round\""}
+    ok = DraftOut(subject="your seed round", body="Built 12 Shopify stores.", cited_evidence_ids=["E1"])
+    assert draft_is_grounded(ok, listing, "Why choose: built 12 Shopify stores")
+    assert not draft_is_grounded(ok, listing, "Why choose: (none)")
+    long = DraftOut(subject="s", body="word " * 120, cited_evidence_ids=["E1"])
+    assert not draft_is_grounded(long, listing)

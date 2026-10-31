@@ -114,3 +114,21 @@ def test_draft_numbers_may_come_only_from_evidence_or_the_senders_own_points():
     assert not draft_is_grounded(ok, listing, "Why choose: (none)")
     long = DraftOut(subject="s", body="word " * 120, cited_evidence_ids=["E1"])
     assert not draft_is_grounded(long, listing)
+
+
+def test_seed_article_urls_become_fetchable_sources_without_any_quotable_text_of_their_own():
+    import asyncio
+
+    from app.pipeline.discover import discover
+    from app.pipeline.extract import build_sources
+    from app.pipeline.jobspec import JobSpec
+    from app.pipeline.research import ResearchBundle
+
+    spec = JobSpec.model_validate({"client": {"key": "k", "name": "n"}, "ask": "a", "count": 1, "icp": {}, "seeds_only": True,
+                                   "playbook": {"signals": [], "buyer_titles": ["CEO"]},
+                                   "seeds": [{"domain": "acme.co.uk", "name": "Acme", "note": "raised £1m",
+                                              "source_urls": ["https://news.example/acme-raises"]}]})
+    [c] = asyncio.run(discover(spec, serper=None, llm=None, exclude=set(), limit=5))
+    assert [h.link for h in c.seed_hits] == ["https://news.example/acme-raises"]
+    _, texts = build_sources(ResearchBundle("acme.co.uk", None, seed_hits=c.seed_hits))
+    assert "raised" not in texts["https://news.example/acme-raises"]  # the research note is never evidence

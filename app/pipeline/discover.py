@@ -190,8 +190,9 @@ async def discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exc
     for seed in spec.seeds:  # researched first; still subject to every downstream check
         domain = normalize_domain(seed.domain)
         if domain and domain not in exclude and domain not in by_domain:
+            hits = [SearchHit("", url, "", None, "news", "seed") for url in seed.source_urls]
             by_domain[domain] = Candidate(domain=domain, name_hint=seed.name, prior=1.0, triage_note=seed.note,
-                                          category=seed.category)
+                                          category=seed.category, seed_hits=hits)
             by_name[seed.name.lower()] = by_domain[domain]
     if spec.seeds_only or len(by_domain) >= limit:
         return list(by_domain.values()) if spec.seeds_only else list(by_domain.values())[:limit]

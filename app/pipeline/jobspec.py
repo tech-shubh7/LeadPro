@@ -28,6 +28,9 @@ class SeedSpec(BaseModel):
     name: str
     category: str | None = None
     note: str = ""
+    # Articles found by outside research. They are fetched live like any other source; only the fetched page
+    # text can be quoted (the note above is never evidence).
+    source_urls: list[str] = Field(default_factory=list)
 
 
 class SignalSpec(BaseModel):

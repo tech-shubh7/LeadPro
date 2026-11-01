@@ -37,6 +37,14 @@ THIRD_PARTY_DOMAINS = frozenset({
     "yell.com", "wikipedia.org", "amazon.co.uk", "amazon.com", "ebay.co.uk", "trustpilot.com", "medium.com",
     "reddit.com", "prnewswire.com", "businesswire.com", "globenewswire.com", "google.com", "apple.com",
     "studysmarter.co.uk",
+    # job aggregators / career-advice and company-listing sites (never a company's own website)
+    "expertini.com", "jobleads.com", "jobgether.com", "talent.com", "jooble.org", "careerjet.co.uk", "jobrapido.com",
+    "neuvoo.co.uk", "tealhq.com", "wfh.team", "flowremote.io", "jobs.workable.com", "huntukvisasponsors.com",
+    "justlondonjobs.com", "leicesterjobs.uk", "cwjobs.co.uk", "jobserve.com", "talents.studysmarter.co.uk",
+    "digitalagencynetwork.com", "designrush.com", "clutch.co", "goodfirms.co", "selectedfirms.co", "techbehemoths.com",
+    "sortlist.com", "getlatka.com", "zoominfo.com", "rocketreach.co", "apollo.io", "lusha.com", "dnb.com",
+    "indeed.co.uk", "uk.indeed.com", "lbbonline.com", "prolificnorth.co.uk", "businesscloud.co.uk",
+    "thebusinessdesk.com", "bdaily.co.uk", "yahoo.com", "finance.yahoo.com",
 })
 STAFFING_WORDS = ("recruitment", "recruiter", "staffing", "manpower", "placement", "headhunt")
 GL = {"GB": "uk", "US": "us", "IN": "in"}

@@ -106,3 +106,25 @@ def test_suppressed_email_never_attached_from_reuse_cache(mx_ok):
     asyncio.run(attach_emails([dm], [], "acme.co.uk", [finder], known={("jane", "roe"): "jane.roe@acme.co.uk"},
                               suppressed_emails=frozenset({"jane.roe@acme.co.uk"})))
     assert dm.email is None
+
+
+def test_same_mailbox_for_two_names_is_one_person(mx_ok):
+    """'Chris' from an article and 'Christopher' from the registry resolve to one address: keep the
+    higher-ranked one only. (The fake finder returns one address for everybody.)"""
+    finder = FakeFinder(EmailResult("c.burgess@acme.co.uk", EmailVerdict.VALID, "fake", "valid"))
+    chris = DecisionMaker("Chris", "Burgess", "Group CEO", BuyerRole.ECONOMIC_BUYER, "u", "q")
+    christopher = DecisionMaker("Christopher", "Burgess", "Director", BuyerRole.ECONOMIC_BUYER, "u", "q")
+    people = [chris, christopher]
+    asyncio.run(attach_emails(people, [], "acme.co.uk", [finder]))
+    assert [p.first_name for p in people] == ["Chris"] and people[0].email == "c.burgess@acme.co.uk"
+
+
+def test_distinct_mailboxes_are_both_kept(mx_ok):
+    class TwoAddresses(FakeFinder):
+        async def find(self, first, last, domain):
+            return EmailResult(f"{first.lower()}@acme.co.uk", EmailVerdict.VALID, "fake", "valid")
+    a = DecisionMaker("Alan", "Foot", "Director", BuyerRole.ECONOMIC_BUYER, "u", "q")
+    b = DecisionMaker("Paul", "Slaney", "Director", BuyerRole.ECONOMIC_BUYER, "u", "q")
+    people = [a, b]
+    asyncio.run(attach_emails(people, [], "acme.co.uk", [TwoAddresses(None)]))
+    assert len(people) == 2 and {p.email for p in people} == {"alan@acme.co.uk", "paul@acme.co.uk"}

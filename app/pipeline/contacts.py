@@ -88,6 +88,18 @@ def rank_decision_makers(extraction: Extraction, officers: list[Officer], office
     return [dm for _, dm in ranked[:limit]]
 
 
+def drop_duplicate_mailboxes(people: list[DecisionMaker]) -> None:
+    """One mailbox is one person. 'Chris Burgess' (from an article) and 'Christopher Burgess' (from the
+    registry) resolving to the same verified address are the same human: keep the higher-ranked, drop the
+    rest, so nobody is emailed twice. Mutates `people` (earlier = higher rank)."""
+    seen: set[str] = set()
+    for dm in list(people):
+        if dm.email and dm.email.lower() in seen:
+            people.remove(dm)
+        elif dm.email:
+            seen.add(dm.email.lower())
+
+
 async def attach_emails(people: list[DecisionMaker], site_emails: list[str], domain: str, finders: list[EmailFinder],
                         known: dict[tuple[str, str], str] | None = None,
                         suppressed_emails: frozenset[str] = frozenset()) -> None:
@@ -109,6 +121,7 @@ async def attach_emails(people: list[DecisionMaker], site_emails: list[str], dom
                 dm.email, dm.email_source, dm.email_verdict, dm.finder_status = res.email, EmailSource.COMPANY_PAGE, res.verdict, res.raw_status
                 continue
     if not await has_mx(domain):  # no mailbox can exist; don't pay for lookups
+        drop_duplicate_mailboxes(people)
         return
     pending = [dm for dm in people if dm.email is None]
     results = await asyncio.gather(*(find_with_waterfall(finders, dm.first_name, dm.last_name, domain) for dm in pending),
@@ -129,3 +142,4 @@ async def attach_emails(people: list[DecisionMaker], site_emails: list[str], dom
         dm.email_verdict = res.verdict
         if res.verdict == EmailVerdict.VALID and res.email:
             dm.email, dm.email_source = res.email, EmailSource.FINDER
+    drop_duplicate_mailboxes(people)

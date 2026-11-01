@@ -43,6 +43,7 @@ class DateSource(StrEnum):
     JSON_LD = "json_ld"
     URL_PATH = "url_path"
     HTML_MARKUP = "html_markup"  # htmldate, markup only (time/meta tags), article pages only
+    OFFICIAL_NOTICE = "official_notice"  # publication date in a government open-data record (e.g. Contracts Finder)
 
 
 class DatePrecision(StrEnum):

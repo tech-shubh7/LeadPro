@@ -9,6 +9,7 @@ from lxml import html as lxml_html
 from app.core.fetcher import Fetcher, FetchResult, visible_text
 from app.core.normalize import PhoneHit, extract_emails, extract_phones, normalize_domain
 from app.pipeline.discover import Candidate
+from app.pipeline.sources import FIRST_PARTY_KINDS
 from app.providers.registry.companies_house import find_company_numbers, find_legal_names
 
 MAX_SITE_PAGES = 8
@@ -104,7 +105,7 @@ async def research(candidate: Candidate, fetcher: Fetcher, phone_region: str,
     if live is not None:
         bundle.pages[live.final_url] = live
         links = pick_internal_links(live.html, live.final_url, candidate.domain)[:MAX_SITE_PAGES]
-    seed_urls = list(dict.fromkeys(h.link for h in bundle.seed_hits))[:MAX_SEED_ARTICLES + 2]
+    seed_urls = list(dict.fromkeys(h.link for h in bundle.seed_hits if h.kind not in FIRST_PARTY_KINDS))[:MAX_SEED_ARTICLES + 2]
     results = await asyncio.gather(*(fetcher.fetch(u) for u in dict.fromkeys(links + seed_urls)))
     for r in results:
         if r.ok:

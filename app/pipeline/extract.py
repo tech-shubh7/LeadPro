@@ -11,6 +11,7 @@ from app.core.evidence_verify import Claim, canonical_url, normalize_text, phras
 from app.models.enums import DateSource
 from app.pipeline.jobspec import JobSpec
 from app.pipeline.research import ResearchBundle
+from app.pipeline.sources import FIRST_PARTY_KINDS
 from app.providers.llm.openai_provider import OpenAIProvider
 
 
@@ -114,13 +115,20 @@ def build_sources(bundle: ResearchBundle) -> tuple[str, dict[str, str]]:
     """LLM input and the texts claims are verified against (keyed by URL)."""
     texts: dict[str, str] = {url: page.text for url, page in bundle.pages.items() if page.text}
     for hit in bundle.seed_hits:
-        texts.setdefault(hit.link, f"{hit.title}\n{hit.snippet}")
+        if hit.kind in FIRST_PARTY_KINDS:  # the API record fetched this run is the source, not the (JS-rendered) page
+            texts[hit.link] = f"{hit.title}\n{hit.snippet}"
+        else:
+            texts.setdefault(hit.link, f"{hit.title}\n{hit.snippet}")
     limit = get_settings().llm_max_page_chars  # limits what the model reads; verification uses full text
     blocks = [f'<source url="{url}">\n{text[:limit]}\n</source>' for url, text in texts.items()]
     return "\n\n".join(blocks), texts
 
 
 def _signal_date(url: str, bundle: ResearchBundle, today: date) -> TrustedDate | None:
+    for hit in bundle.seed_hits:  # API-published dates (job posting / government notice) outrank page guessing
+        if hit.link == url and hit.kind in FIRST_PARTY_KINDS and hit.date_text:
+            source = DateSource.JOB_POSTING if hit.kind == "ats" else DateSource.OFFICIAL_NOTICE
+            return TrustedDate(date.fromisoformat(hit.date_text), source)
     page = bundle.pages.get(url)
     if page is not None and (d := extract_page_date(page.html, url)):
         return d

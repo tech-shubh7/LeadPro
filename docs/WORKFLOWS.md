@@ -11,6 +11,16 @@ Both workflows run the same pipeline: the same searches, page fetches, Companies
 
 Both need `SERPER_API_KEY`, `COMPANIES_HOUSE_API_KEY` and `GENERECT_API_KEY` in `.env`.
 
+## Finding candidates: three ways, mixable in one job
+
+| How | Job field | Best for |
+|---|---|---|
+| Hand-researched companies | `seeds:` (+ `seeds_only: true`) | You already know who to look at |
+| Structured public datasets | `sources:` (+ `sources_only: true`) | A buyer type that leaves a public trail: companies hiring a given role (`ats_jobs`), suppliers that just won a UK contract (`contracts_awards`) |
+| General web/news search | (default) | Everything else; slowest and noisiest |
+
+Structured sources still go through every check (live website, quote verification, dated signal, Companies House, verified email). They only replace the noisy "who should we look at" step. See `docs/OPEN_ITEMS.md` section 8 for what is and is not supported.
+
 ## Before any run
 
 ```bash

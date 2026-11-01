@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ClientSpec(BaseModel):
@@ -31,6 +31,34 @@ class SeedSpec(BaseModel):
     # Articles found by outside research. They are fetched live like any other source; only the fetched page
     # text can be quoted (the note above is never evidence).
     source_urls: list[str] = Field(default_factory=list)
+
+
+class SourceSpec(BaseModel):
+    """A structured public dataset in which every row is already a candidate buyer (a company hiring for a
+    role, a supplier that just won a contract). Candidates found this way still pass every downstream check;
+    the source only decides who gets researched, replacing noisy general web search."""
+    type: Literal["ats_jobs", "contracts_awards"]
+    category: str | None = None  # what these companies are ("digital agency"); keeps the website lookup on target
+    # ats_jobs: Greenhouse / Lever / Ashby / SmartRecruiters public job APIs
+    search_queries: list[str] = Field(default_factory=list)  # Google queries that surface job boards, e.g. site:jobs.lever.co ...
+    role_keywords: list[str] = Field(default_factory=list)  # a posting counts if its title has one of these as whole words
+    locations: list[str] = Field(default_factory=list)  # posting location must contain one as a whole word; empty = any
+    min_roles: int = Field(default=1, ge=1)
+    max_boards: int = Field(default=60, ge=1, le=300)
+    # contracts_awards: UK Contracts Finder award notices
+    keywords: list[str] = Field(default_factory=list)  # any of these in the notice title/description
+    cpv_prefixes: list[str] = Field(default_factory=list)  # e.g. "72" = IT services
+    sme_only: bool = True  # supplier declared itself an SME in the notice
+    published_days: int = Field(default=30, ge=1, le=90)
+    max_pages: int = Field(default=10, ge=1, le=40)
+
+    @model_validator(mode="after")
+    def needs_its_fields(self):
+        if self.type == "ats_jobs" and not (self.search_queries and self.role_keywords):
+            raise ValueError("ats_jobs needs search_queries and role_keywords")
+        if self.type == "contracts_awards" and not (self.keywords or self.cpv_prefixes):
+            raise ValueError("contracts_awards needs keywords or cpv_prefixes")
+        return self
 
 
 class SignalSpec(BaseModel):
@@ -65,6 +93,8 @@ class JobSpec(BaseModel):
     sender: SenderSpec | None = None
     seeds: list[SeedSpec] = Field(default_factory=list)
     seeds_only: bool = False  # research only the seeds (outside research already found them); skip discovery
+    sources: list[SourceSpec] = Field(default_factory=list)  # structured public datasets, tried before web search
+    sources_only: bool = False  # seeds + sources only; skip general web-search discovery
     max_search_queries: int = Field(default=30, ge=1, le=300)  # discovery budget (planned + resolution)
 
     @field_validator("countries")

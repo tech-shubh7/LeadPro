@@ -7,6 +7,7 @@ from app.models.enums import AliveProof
 
 
 REGISTRY_MATCH_NUMBER = "company_number_on_site"  # number printed on the company's own pages: identity-grade
+REGISTRY_MATCH_SOURCE = "company_number_in_source"  # number stated by the discovery source (award notice); identity-grade
 REGISTRY_MATCH_LEGAL_NAME = "legal_name_on_site"  # "X Limited" printed on its own pages, exactly one active match
 REGISTRY_MATCH_OFFICER = "officer_and_name"  # a quote-verified decision-maker is a current officer of it, name matches
 REGISTRY_MATCH_NAME = "exact_name"  # exact name to exactly one active company: good, but never used to merge records

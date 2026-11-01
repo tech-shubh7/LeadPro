@@ -22,6 +22,7 @@ from app.core.normalize import normalize_domain
 from app.countries import get_pack
 from app.countries.base import (
     REGISTRY_MATCH_LEGAL_NAME, REGISTRY_MATCH_NAME, REGISTRY_MATCH_NUMBER, REGISTRY_MATCH_OFFICER,
+    REGISTRY_MATCH_SOURCE,
 )
 from app.db import session_scope
 from app.models.enums import AliveProof, JobStatus, LeadTier
@@ -100,10 +101,12 @@ def _brand_words(company_name: str, domain: str) -> set[str]:
     return {w for w in words if len(w) >= 4 and w not in generic}
 
 
-async def _registry_record(deps: Deps, pack, bundle, company_name: str, people=()):
+async def _registry_record(deps: Deps, pack, bundle, company_name: str, people=(), source_number: str | None = None):
     """Returns (record, how it was matched) or (None, None)."""
     if deps.registry is None or pack.registry_name != "companies_house":
         return None, None
+    if source_number and (record := await deps.registry.profile(source_number)):  # stated by the award notice itself
+        return record, REGISTRY_MATCH_SOURCE
     for number in bundle.company_numbers:  # printed company number: exact, best match
         if record := await deps.registry.profile(number):
             return record, REGISTRY_MATCH_NUMBER
@@ -134,8 +137,12 @@ async def process_candidate(c: Candidate, spec: JobSpec, deps: Deps, today: date
     staffing_wanted = any(w in spec.ask.lower() for w in STAFFING_WORDS)
     if ext.is_staffing and not staffing_wanted:
         raise Rejected("recruitment/staffing firm")
-    record, registry_match = await _registry_record(deps, pack, bundle, ext.company_name, ext.people)
-    if record and registry_match == REGISTRY_MATCH_NUMBER:
+    if c.registry_id and bundle.company_numbers and c.registry_id not in bundle.company_numbers:
+        # The website prints a different registered number than the award notice's supplier: wrong site.
+        raise Rejected(f"website prints company number {', '.join(bundle.company_numbers)}, "
+                       f"not the notice supplier's {c.registry_id}")
+    record, registry_match = await _registry_record(deps, pack, bundle, ext.company_name, ext.people, c.registry_id)
+    if record and registry_match in (REGISTRY_MATCH_NUMBER, REGISTRY_MATCH_SOURCE):
         key = (record.registry, record.registry_id)
         if key in guards.claimed_registry:  # check-and-claim has no await between: safe under asyncio
             raise Rejected(f"duplicate company: {record.registry} {record.registry_id} already delivered to this "
@@ -221,7 +228,8 @@ async def run_job(spec: JobSpec, out_dir: Path, deps: Deps | None = None, today:
     try:
         try:
             candidates = await discover(spec, deps.serper, deps.llm, exclude,
-                                        math.ceil(spec.count * settings.overfetch_factor), stats_out=query_stats)
+                                        math.ceil(spec.count * settings.overfetch_factor), stats_out=query_stats,
+                                        today=today)
         except CostCapExceeded as exc:
             summary.status = JobStatus.DONE_WITH_SHORTFALL
             log.warning("cost cap reached during discovery: %s", exc)

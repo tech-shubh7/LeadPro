@@ -86,6 +86,33 @@ From an external lead-generation playbook, checked against the code. Most of it 
 - **Email reuse window** reduced from 90 to 60 days (`EMAIL_REUSE_MAX_DAYS`).
 - **Not adopted:** the 10-table schema, tenant isolation, the Gulf/Australia legal rows, and unverified legal dates (India DPDP "13 May 2027", Oman decree). They don't apply to an internal UK-first tool.
 
+## 8. Structured sources (added 2026-11-01)
+
+Discovery can start from public datasets in which every row is already a candidate buyer, instead of general web
+search (`sources:` in the job YAML, `sources_only: true` to skip web search). Built and tested:
+
+- **ats_jobs**: Greenhouse, Lever, Ashby and SmartRecruiters public job APIs (endpoints checked live). Boards are found
+  with `site:` Google queries; postings are filtered by role words, location and age. The platform's own first-published
+  date is the signal date (`job_posting`); Greenhouse `updated_at` is deliberately not used. Workable, Teamtailor and
+  Recruitee are NOT supported (no verified public endpoint).
+- **contracts_awards**: UK Contracts Finder award notices (OCDS). The notice names the supplier and usually its Companies
+  House number, used as an identity-grade match (`company_number_in_source`) and cross-checked against any number printed
+  on the website. Publication date is stored as `official_notice` (migration `a41c7e2d9b10`).
+
+Measured fit (2026-11-01 dry run, 8 Google queries, 49 boards, ~70s): good for buyers that run a formal ATS (B2B SaaS and
+scale-ups hiring sales/RevOps/engineers). Poor for small UK agencies and SMEs: the 22 candidates it returned for
+"agencies hiring business development" were large software firms (Anthropic, Braze, Spotify, Samsara), because small UK agencies
+rarely use these platforms. For SME/agency ICPs use news-driven discovery or seeds; keep this source for ICPs that fit it.
+
+Designed, NOT built:
+- **Pool sources** (Companies House SIC search, FCA register, Ofsted, CQC): complete lists with no dated event; they need a
+  trigger per company, so they only feed the `include_icp_only` tier until a trigger step exists.
+- **Runtime source proposal** (the model proposes which public dataset lists a new client's buyers, code validates that the
+  URL exists, is structured, is dated and is permitted by robots.txt/terms before use). Needs a per-source parser contract
+  first, otherwise it would reintroduce hallucination at the discovery layer.
+- **Not usable under their terms**: Clutch, ThomasNet, ImportYeti (bulk extraction prohibited). BuiltWith is paid API only.
+  SAM.gov and NMLS are US datasets (US pack).
+
 ## Settled
 
 | Date | Item | Outcome / evidence |

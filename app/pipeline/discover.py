@@ -8,6 +8,7 @@ Nothing is fetched or deeply researched until a hit has been triaged as a likely
 import asyncio
 import re
 from dataclasses import dataclass, field, replace
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.core.normalize import normalize_domain
 from app.pipeline.jobspec import JobSpec
+from app.pipeline.sources import collect_sources
 from app.providers.llm.openai_provider import OpenAIProvider
 from app.providers.search.serper import SearchHit, SerperClient
 
@@ -52,6 +54,7 @@ class Candidate:
     prior: float = 0.0  # triage fit estimate 0-1, used to research the most promising first
     triage_note: str = ""
     category: str | None = None  # e.g. "functional coffee brand"; disambiguates common-word names
+    registry_id: str | None = None  # company number stated by the discovery source itself (e.g. a contract award notice)
 
 
 # ---- LLM schemas -----------------------------------------------------------------------------
@@ -179,8 +182,9 @@ async def triage(spec: JobSpec, llm: OpenAIProvider, hits: list[SearchHit]) -> l
 # ---- main loop -------------------------------------------------------------------------------
 
 async def discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exclude: set[str], limit: int,
-                   stats_out: list | None = None) -> list[Candidate]:
+                   stats_out: list | None = None, today: date | None = None, sources=None) -> list[Candidate]:
     settings = get_settings()
+    today = today or date.today()
     gl = GL.get(spec.countries[0], "uk")
     tbs = "qdr:m" if spec.freshness_days <= 31 else "qdr:y"  # coarse; exact window enforced on trusted dates
     budget = spec.max_search_queries
@@ -196,10 +200,21 @@ async def discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exc
             by_name[seed.name.lower()] = by_domain[domain]
     if spec.seeds_only or len(by_domain) >= limit:
         return list(by_domain.values()) if spec.seeds_only else list(by_domain.values())[:limit]
+    if spec.sources:  # structured datasets first: rows that are already candidate buyers
+        found, used = await collect_sources(spec, serper, sources, gl, today, budget)
+        budget -= used
+        for cand in found:
+            key = cand.name_hint.lower()
+            if known := by_name.get(key):
+                known.seed_hits += cand.seed_hits
+                known.registry_id = known.registry_id or cand.registry_id
+                known.prior = max(known.prior, cand.prior)
+            else:
+                by_name[key] = cand
     queue: list[PlannedQuery] = [PlannedQuery(signal_type=s.type, kind=s.kind, query=q, rationale="playbook")
                                  for s in spec.playbook.signals for q in s.queries]
 
-    for _round in range(settings.discovery_rounds):
+    for _round in range(0 if spec.sources_only else settings.discovery_rounds):
         if not queue:
             queue = await plan_queries(spec, llm, stats, n=min(settings.discovery_queries_per_round, budget))
         batch, queue = queue[:budget], []

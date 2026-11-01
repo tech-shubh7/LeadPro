@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     discovery_queries_per_round: int = 8
     triage_min_fit: int = 5  # 0-10 ICP fit from snippet needed to become a candidate
     company_news_queries: int = 1  # per-candidate targeted news search (multi-source evidence)
-    research_concurrency: int = 5
+    research_concurrency: int = 8  # companies researched at once; each fetches its pages in parallel too
     revalidate_after_days: int = 7
     email_reuse_max_days: int = 60  # a stored verified email is reused (not re-paid) only if verified this recently
 

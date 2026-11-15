@@ -129,3 +129,10 @@ def test_wildcard_site_operators_are_rewritten_to_ones_google_supports():
     assert clean_query('site:*.co.uk "request for proposal"') == 'site:co.uk "request for proposal"'
     assert clean_query('site:*.co.uk/careers OR SITE:*.org.uk x') == 'site:co.uk/careers OR site:org.uk x'
     assert clean_query('site:acme.co.uk news') == 'site:acme.co.uk news'
+
+
+def test_malformed_exclusions_are_repaired():
+    """Job 18: the planner wrote -_"our services", which Google does not read as an exclusion."""
+    from app.providers.search.serper import clean_query
+    assert clean_query('agency -_"our services" -_"case study"') == 'agency -"our services" -"case study"'
+    assert clean_query('a -"ok" b') == 'a -"ok" b'

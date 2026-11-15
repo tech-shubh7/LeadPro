@@ -140,3 +140,26 @@ def test_the_primary_model_refusing_the_request_still_fails_loudly(monkeypatch):
     models.generate_content = bad
     with pytest.raises(LLMRefusal):
         asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out, effort="medium"))
+
+
+def test_a_rate_limit_waits_as_long_as_the_provider_asks(monkeypatch):
+    """Free-tier quota says 'retry in 43.9s'; retrying after 2s fails again (job 18)."""
+    waits = []
+
+    async def record(seconds):
+        waits.append(seconds)
+    monkeypatch.setattr(gp.asyncio, "sleep", record)
+    provider, models = _provider(busy=set())
+    real = models.generate_content
+    state = {"n": 0}
+
+    async def quota_once(model, contents, config):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise genai_errors.APIError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                                                        "message": "Quota exceeded. Please retry in 43.9s."}})
+        return await real(model, contents, config)
+
+    models.generate_content = quota_once
+    assert asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out)).answer == "gemini-3.8-flash"
+    assert waits and 43.9 <= waits[0] <= gp.MAX_RETRY_WAIT_S

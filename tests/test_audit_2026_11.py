@@ -295,3 +295,29 @@ def test_old_cached_pages_are_deleted(tmp_path):
     new.write_text("{}")
     os.utime(old, (_time.time() - 40 * 86400,) * 2)
     assert cache.prune(timedelta(days=30)) == 1 and not old.exists() and new.exists()
+
+
+def test_source_candidates_outside_the_icp_are_not_researched():
+    """Job 18: asked for digital agencies, the job boards returned fintech and SaaS companies."""
+    from app.pipeline.discover import Candidate, HitTriage, TriageOut, icp_gate
+    from app.pipeline.jobspec import JobSpec
+    from app.providers.search.serper import SearchHit
+
+    def cand(name):
+        return Candidate(domain="", name_hint=name, seed_hits=[
+            SearchHit(f"{name} job posting: Developer", f"https://jobs.lever.co/{name.lower()}/1", "", None, "ats", "q")])
+
+    class LLM:
+        extract_model = judge_model = "m"
+
+        async def parse(self, model, instructions, data, schema, **k):
+            return TriageOut(items=[
+                HitTriage(hit_index=0, company_name="Pixel Agency", entity_type="target_company",
+                          link_is_company_own_site=False, icp_fit=8),
+                HitTriage(hit_index=1, company_name="Sardine", entity_type="target_company",
+                          link_is_company_own_site=False, icp_fit=1)])
+
+    spec = JobSpec.model_validate({"client": {"key": "k", "name": "n"}, "ask": "UK digital agencies", "count": 3,
+                                   "icp": {}, "playbook": {"signals": [], "buyer_titles": ["md"]}})
+    kept = asyncio.run(icp_gate(spec, LLM(), [cand("Pixel Agency"), cand("Sardine")]))
+    assert [c.name_hint for c in kept] == ["Pixel Agency"]

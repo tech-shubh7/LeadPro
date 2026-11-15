@@ -24,12 +24,15 @@ from app.core.cost import CostTracker
 log = logging.getLogger("leadpro.serper")
 DEV_CACHE_MAX_AGE_S = 24 * 3600
 _SITE_WILDCARD = re.compile(r"\bsite:\*\.", re.I)
+_BAD_EXCLUDE = re.compile(r'-[_\s]+"')
 
 
 def clean_query(q: str) -> str:
     """Google has no wildcard in site: ('site:*.co.uk' returns nothing at all); 'site:co.uk' means every
     .co.uk site. Model-written queries use the wildcard form often: job 14 lost 6 of 24 searches to it."""
-    return _SITE_WILDCARD.sub("site:", q)
+    q = _SITE_WILDCARD.sub("site:", q)
+    # '-_"our services"' (a stray underscore the model sometimes writes) is not an exclusion to Google.
+    return _BAD_EXCLUDE.sub('-"', q)
 BASE_URL = "https://google.serper.dev"
 GOOGLE_REDIRECT = "https://www.google.com/goto?"
 _SECTION = {"search": "organic", "news": "news"}

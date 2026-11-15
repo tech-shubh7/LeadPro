@@ -11,6 +11,7 @@ the judge steps.
 import asyncio
 import logging
 import random
+import re
 import time
 
 import httpx
@@ -55,6 +56,16 @@ def _thinking_is_off(config) -> bool:
 
 def _without_thinking_off(config):
     return config.model_copy(update={"thinking_config": None}) if _thinking_is_off(config) else config
+
+
+MAX_RETRY_WAIT_S = 65.0
+_RETRY_IN = re.compile(r"retry in ([\d.]+)\s*s|'retryDelay':\s*'(\d+)s'", re.I)
+
+
+def _retry_after(exc: Exception) -> float | None:
+    if m := _RETRY_IN.search(str(exc)):
+        return float(m.group(1) or m.group(2))
+    return None
 
 
 def _cool(model: str) -> None:
@@ -133,6 +144,10 @@ class GeminiProvider:
                         _cool(current)
                         break  # this model is gone or still overloaded: try the next one
                     delay = BASE_DELAY_S * (2 ** attempt) + random.uniform(0, 1)
+                    if code == 429 and (asked := _retry_after(exc)):
+                        # A per-minute quota says exactly when it resets ("retry in 43.9s"); retrying
+                        # sooner just fails again (job 18 lost five agencies that way).
+                        delay = min(max(delay, asked + random.uniform(0.5, 2)), MAX_RETRY_WAIT_S)
                     log.warning("gemini %s returned %s, retrying in %.1fs (%d/%d)",
                                 current, code, delay, attempt + 1, attempts - 1)
                     await asyncio.sleep(delay)

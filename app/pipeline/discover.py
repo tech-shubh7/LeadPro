@@ -6,6 +6,7 @@ query was and writes better ones, until enough strong candidates exist or the qu
 Nothing is fetched or deeply researched until a hit has been triaged as a likely target company.
 """
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field, replace
 from datetime import date
@@ -17,7 +18,7 @@ from app.config import get_settings
 from app.core.normalize import normalize_domain
 from app.pipeline.jobspec import JobSpec
 from app.pipeline.sources import collect_sources
-from app.providers.llm.openai_provider import OpenAIProvider
+from app.providers.llm.openai_provider import LLMRefusal, OpenAIProvider
 from app.providers.search.serper import SearchHit, SerperClient
 
 # Domains that host content about *other* companies (news, job boards, directories, social).
@@ -47,6 +48,7 @@ THIRD_PARTY_DOMAINS = frozenset({
     "thebusinessdesk.com", "bdaily.co.uk", "finance.yahoo.com",
 })
 STAFFING_WORDS = ("recruitment", "recruiter", "staffing", "manpower", "placement", "headhunt")
+log = logging.getLogger("leadpro.discover")
 GL = {"GB": "uk", "US": "us", "IN": "in"}
 
 
@@ -218,6 +220,27 @@ async def triage(spec: JobSpec, llm: OpenAIProvider, hits: list[SearchHit]) -> l
     return valid
 
 
+async def icp_gate(spec: JobSpec, llm: OpenAIProvider, cands: list[Candidate]) -> list[Candidate]:
+    """Source rows pass the same ICP triage as search results before any research is spent on them. A job
+    board knows who is hiring, not whether that company is the kind the client sells to: job 18 asked for
+    digital agencies and the boards returned fintech and SaaS companies, each researched and scored 0."""
+    if not cands:
+        return cands
+    hits = [c.seed_hits[0] for c in cands if c.seed_hits]
+    with_hits = [c for c in cands if c.seed_hits]
+    try:
+        verdicts = await triage(spec, llm, hits)
+    except LLMRefusal as exc:  # the gate is a saving, not a check anything relies on: keep them all
+        log.warning("ICP gate skipped (%s); researching %d source candidates ungated", exc, len(cands))
+        return cands
+    keep_idx = {t.hit_index for t in verdicts
+                if t.entity_type == "target_company" and t.icp_fit >= get_settings().triage_min_fit}
+    kept = [c for i, c in enumerate(with_hits) if i in keep_idx]
+    if dropped := len(with_hits) - len(kept):
+        log.info("ICP gate dropped %d of %d source candidates", dropped, len(with_hits))
+    return kept + [c for c in cands if not c.seed_hits]
+
+
 # ---- main loop -------------------------------------------------------------------------------
 
 RESOLVE_CONCURRENCY = 6
@@ -263,6 +286,7 @@ async def _discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, ex
     if spec.sources:  # structured datasets first: rows that are already candidate buyers
         found, used = await collect_sources(spec, serper, sources, gl, today, budget)
         budget -= used
+        found = await icp_gate(spec, llm, found)
         for cand in found:
             key = cand.name_hint.lower()
             if known := by_name.get(key):

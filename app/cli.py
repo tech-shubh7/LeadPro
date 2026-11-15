@@ -35,7 +35,25 @@ def _preflight(llm_mode: str, countries: list[str], online: bool = False) -> lis
     if "GB" in countries:
         checks.append((bool(st.companies_house_api_key), "COMPANIES_HOUSE_API_KEY set (free UK registry)"))
     checks.append((bool(st.generect_api_key), "GENERECT_API_KEY set (verified emails)"))
-    if llm_mode == "openai":
+    if llm_mode == "gemini":
+        checks.append((bool(st.gemini_api_key), "GEMINI_API_KEY set (llm mode 'gemini')"))
+        if online and st.gemini_api_key:
+            from google import genai
+            from google.genai import types as genai_types
+
+            # A real generate, not models.get(): metadata lookup succeeds for models the key is not
+            # allowed to call, so it passes for a retired model and the run then dies on a 404.
+            client = genai.Client(api_key=st.gemini_api_key,
+                                  http_options=genai_types.HttpOptions(api_version="v1beta"))
+            for model in {st.gemini_extract_model, st.gemini_judge_model}:
+                try:
+                    client.models.generate_content(
+                        model=model, contents="ok",
+                        config=genai_types.GenerateContentConfig(max_output_tokens=800))
+                    checks.append((True, f"Gemini model {model} answers"))
+                except Exception as exc:
+                    checks.append((False, f"Gemini model {model}: {type(exc).__name__}: {str(exc)[:200]}"))
+    elif llm_mode == "openai":
         checks.append((bool(st.openai_api_key), "OPENAI_API_KEY set (llm mode 'openai'; use --llm manual without a key)"))
         if online and st.openai_api_key:
             from openai import OpenAI
@@ -63,7 +81,7 @@ def _resolve_mode(llm: str | None) -> str:
 
 @cli.command()
 def doctor(
-    llm: str = typer.Option(None, "--llm", help="openai | manual (default: LLM_MODE from .env)"),
+    llm: str = typer.Option(None, "--llm", help="openai | gemini | manual (default: LLM_MODE from .env)"),
     online: bool = typer.Option(False, "--online", help="Also confirm the OpenAI models exist (free API call)"),
 ) -> None:
     """Check the database and API keys before a run. Spends nothing."""
@@ -80,8 +98,8 @@ def doctor(
 def run(
     job_file: Path,
     out_dir: Path = Path("output"),
-    llm: str = typer.Option(None, "--llm", help="openai (needs OPENAI_API_KEY) | manual (no key: answer tasks "
-                                                "with `leadpro task`/`leadpro answer`). Default: LLM_MODE"),
+    llm: str = typer.Option(None, "--llm", help="openai | gemini | manual (no key: answer tasks with "
+                                                "`leadpro task`/`leadpro answer`). Default: LLM_MODE"),
     fresh: bool = typer.Option(False, "--fresh", help="Ignore dev caches: live searches and pages (24h page cache). "
                                                      "Use for client/demo runs; dev caches are for debugging reruns."),
 ) -> None:
@@ -151,6 +169,25 @@ def answer(task_id: str, answer_file: Path,
         typer.echo("Not submitted. Fix the quotes (or --force; failing items are dropped by the pipeline).")
         raise typer.Exit(1)
     typer.echo(f"Submitted {task_id}.")
+
+
+@cli.command()
+def web(
+    host: str = typer.Option("127.0.0.1", help="Bind address. Leave on localhost unless WEB_AUTH_TOKEN is set."),
+    port: int = typer.Option(8000),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (development only)"),
+) -> None:
+    """Serve the operator console: every run, lead and piece of evidence, plus suppression and erasure."""
+    import uvicorn
+
+    from app.config import get_settings
+
+    if host not in ("127.0.0.1", "localhost") and not get_settings().web_auth_token:
+        typer.echo("Refusing to bind beyond localhost without WEB_AUTH_TOKEN set: the console shows personal data.")
+        raise typer.Exit(2)
+    typer.echo(f"Console on http://{host}:{port}")
+    uvicorn.run("app.web.main:app", host=host, port=port, reload=reload, access_log=False,
+                proxy_headers=True, forwarded_allow_ips="127.0.0.1")
 
 
 @cli.command()

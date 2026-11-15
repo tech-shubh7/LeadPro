@@ -39,7 +39,12 @@ class DecisionMaker:
 _mx_cache: dict[str, bool] = {}
 
 
+MX_CACHE_MAX = 20_000  # the web process lives for weeks: keep the memo from growing without limit
+
+
 async def has_mx(domain: str) -> bool:
+    if len(_mx_cache) > MX_CACHE_MAX:
+        _mx_cache.clear()
     if domain not in _mx_cache:
         try:
             answer = await dns.asyncresolver.resolve(domain, "MX", lifetime=10)
@@ -108,25 +113,32 @@ async def attach_emails(people: list[DecisionMaker], site_emails: list[str], dom
 
     An email in `suppressed_emails` (opt-out / erasure request) is never attached, even if it was
     verified before, is printed on the site, or a finder returns it again."""
-    if not people or not finders:
+    if not people:
         return
     for dm in people:
         if known and (email := known.get((dm.first_name.lower(), dm.last_name.lower()))) and email not in suppressed_emails:
             dm.email, dm.email_source, dm.email_verdict, dm.finder_status = email, EmailSource.FINDER, EmailVerdict.VALID, "reused"
             continue
         printed = [e for e in site_emails if email_matches_person(e, dm.first_name, dm.last_name) and e not in suppressed_emails]
-        if printed:
-            res = next((r for r in await finders[0].validate(printed[:1]) if r.email == printed[0]), None)
+        if printed and finders:
+            try:
+                results = await finders[0].validate(printed[:1])
+            except CostCapExceeded:
+                raise
+            except Exception as exc:  # as in the finder step: one failed check must not lose the whole lead
+                log.warning("validation failed for %s: %s", printed[0], type(exc).__name__)
+                results = []
+            res = next((r for r in results if r.email == printed[0]), None)
             if res and res.verdict == EmailVerdict.VALID:
                 dm.email, dm.email_source, dm.email_verdict, dm.finder_status = res.email, EmailSource.COMPANY_PAGE, res.verdict, res.raw_status
                 continue
-    if not await has_mx(domain):  # no mailbox can exist; don't pay for lookups
+    if not finders or not await has_mx(domain):  # no finder, or no mailbox can exist: don't pay for lookups
         drop_duplicate_mailboxes(people)
         return
     pending = [dm for dm in people if dm.email is None]
     results = await asyncio.gather(*(find_with_waterfall(finders, dm.first_name, dm.last_name, domain) for dm in pending),
                                    return_exceptions=True)
-    for dm, res in zip(pending, results):
+    for dm, res in zip(pending, results, strict=True):
         if isinstance(res, CostCapExceeded):
             raise res
         if isinstance(res, Exception):  # one slow/failed lookup must not lose the whole lead

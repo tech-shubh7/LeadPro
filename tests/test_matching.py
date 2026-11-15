@@ -85,7 +85,7 @@ def _officer_api(appointments):
 
 
 def _ch():
-    return CompaniesHouseClient(client=httpx.AsyncClient(base_url=CH))
+    return CompaniesHouseClient(client=httpx.AsyncClient(base_url=CH), min_interval_s=0)
 
 
 @respx.mock

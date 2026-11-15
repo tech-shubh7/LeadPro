@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import openpyxl
+import pytest
 import respx
 
 from app.core.cost import CostTracker
@@ -65,6 +66,10 @@ class FakeSerper:
 
 
 class FakeLLM:
+    # the pipeline asks the provider which model each step wants
+    extract_model = "fake-extract"
+    judge_model = "fake-judge"
+
     async def parse(self, model, instructions, data, schema, effort="low", max_output_tokens=16000):
         if schema is QueryPlanOut:
             return QueryPlanOut(queries=[])
@@ -448,7 +453,10 @@ def test_same_registered_company_on_two_domains_is_one_lead(tmp_path: Path, clea
     deps = Deps(FakeSerper(), FakeLLM(), Fetcher(client=httpx.AsyncClient(), cache=PageCache(tmp_path / "c", ttl=None)),
                 [FakeFinder()], ActiveRegistry())
     summary = asyncio.run(run_job(_spec(), tmp_path / "out", deps=deps, today=TODAY))
-    assert summary.rejected.get("duplicate company") == 2, summary.rejected
+    # Exactly one lead for the registered company, whichever domain got there first. A domain that claims the
+    # number but is then rejected for its own reason (say, a stale signal) hands the claim to a waiting one.
+    assert summary.qualified + summary.no_contact == 1, summary
+    assert sum(summary.rejected.values()) == 2 and summary.rejected.get("duplicate company", 0) >= 1, summary.rejected
     with session_scope() as s:
         assert s.query(Company).filter(Company.registry_id == "01234567").count() == 1
 
@@ -494,6 +502,9 @@ def test_judge_sees_the_playbook_signal_strengths():
     from app.pipeline.score import ScoreOut, score
 
     class CaptureLLM:
+        extract_model = "fake-extract"
+        judge_model = "fake-judge"
+
         data = ""
 
         async def parse(self, model, instructions, data, schema, effort="low", max_output_tokens=16000):
@@ -503,3 +514,59 @@ def test_judge_sees_the_playbook_signal_strengths():
 
     asyncio.run(score(Extraction("Acme", "brand", False), _spec(), CaptureLLM(), TODAY))
     assert '"signal_playbook"' in CaptureLLM.data and '"strength": "medium"' in CaptureLLM.data
+
+
+def test_registry_claim_passes_to_a_waiting_domain_when_the_claimant_is_rejected():
+    """Two domains of one registered company: the second waits for the first. If the first is rejected
+    (e.g. its own pages carry no dated signal), the second takes over instead of the company being lost;
+    if the first becomes a lead, the second is a duplicate."""
+    from app.pipeline.runner import Rejected, RunGuards, claim_registry
+
+    async def scenario(first_qualifies: bool):
+        guards, key = RunGuards(), ("companies_house", "01234567")
+        first = await claim_registry(guards, key)
+        second = asyncio.create_task(claim_registry(guards, key))
+        await asyncio.sleep(0)
+        assert not second.done()  # waits instead of being rejected straight away
+        first.set_result(first_qualifies)
+        return await second
+
+    assert not asyncio.run(scenario(False)).done()  # took over the claim
+    with pytest.raises(Rejected, match="duplicate company"):
+        asyncio.run(scenario(True))
+    with pytest.raises(Rejected, match="already delivered"):
+        asyncio.run(claim_registry(RunGuards(delivered_registry={("companies_house", "1")}), ("companies_house", "1")))
+
+
+@respx.mock
+def test_a_run_can_adopt_a_job_row_the_console_already_created(tmp_path: Path, clean_db, monkeypatch):
+    """The console creates the job at intake so the plan can be reviewed, then starts the run against
+    that same row: the run must update it, not insert a second one."""
+    async def mx(domain):
+        return True
+    monkeypatch.setattr(contacts, "has_mx", mx)
+    _mock_sites()
+    with session_scope() as s:
+        parked = Job(client_key="test-client", client_name="Test 3PL", ask="placeholder",
+                     target_countries=["GB"], requested_count=2, cost_cap_inr=50.0,
+                     status=JobStatus.AWAITING_ICP_REVIEW, cost_inr=3.5,
+                     cost_lines=[{"provider": "gemini", "operation": "draft", "units": 1, "cost_inr": 3.5}],
+                     icp={"intake": {"client_summary": "kept across the launch"}})
+        s.add(parked)
+        s.flush()
+        job_id = parked.id
+
+    deps = Deps(FakeSerper(), FakeLLM(), Fetcher(client=httpx.AsyncClient(), cache=PageCache(tmp_path / "c", ttl=None)),
+                [FakeFinder()], ActiveRegistry())
+    summary = asyncio.run(run_job(_spec(), tmp_path / "out", deps=deps, today=TODAY, job_id=job_id))
+
+    assert summary.job_id == job_id
+    with session_scope() as s:
+        assert s.query(Job).count() == 1  # adopted, not duplicated
+        job = s.get(Job, job_id)
+        assert job.status in (JobStatus.DONE, JobStatus.DONE_WITH_SHORTFALL)
+        assert job.ask == "UK e-commerce brands needing fulfilment"  # the reviewed spec won
+        assert job.icp["intake"]["client_summary"] == "kept across the launch"  # intake context kept
+        assert job.icp["playbook"]["signals"][0]["type"] == "hiring_ops"
+        # the plan's drafting spend stays in the job's total instead of being overwritten by the run's
+        assert job.cost_lines[0]["operation"] == "draft" and job.cost_inr >= 3.5

@@ -15,6 +15,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from app.config import get_settings
 from app.core.cost import CostTracker
 from app.providers.llm.openai_provider import DATA_GUARD, LLMRefusal, wrap_data
 
@@ -30,18 +31,29 @@ class ManualLLMProvider:
         self.timeout_s = timeout_s
         task_dir.mkdir(parents=True, exist_ok=True)
 
+    # Only labels here: the model name is written into the task file so whoever answers knows which
+    # role the step plays. Nothing is called.
+    @property
+    def extract_model(self) -> str:
+        return get_settings().llm_extract_model
+
+    @property
+    def judge_model(self) -> str:
+        return get_settings().llm_judge_model
+
     async def parse(self, model: str, instructions: str, data: str, schema: type[T], effort: str = "low",
                     max_output_tokens: int = 16000) -> T:
         task_id = hashlib.sha256(f"{schema.__name__}\n{instructions}\n{data}".encode()).hexdigest()[:16]
         task_path = self.task_dir / f"{task_id}.task.json"
         resp_path = self.task_dir / f"{task_id}.response.json"
         err_path = self.task_dir / f"{task_id}.error.txt"
+        task = {
+            "id": task_id, "step": schema.__name__, "role_model": model, "effort": effort,
+            "instructions": f"{instructions}\n\n{DATA_GUARD}", "json_schema": schema.model_json_schema(),
+            "data": wrap_data(data), "created_at": datetime.now(UTC).isoformat(),
+        }
         if not resp_path.exists() and not task_path.exists():
-            task_path.write_text(json.dumps({
-                "id": task_id, "step": schema.__name__, "role_model": model, "effort": effort,
-                "instructions": f"{instructions}\n\n{DATA_GUARD}", "json_schema": schema.model_json_schema(),
-                "data": wrap_data(data), "created_at": datetime.now(UTC).isoformat(),
-            }, indent=1))
+            task_path.write_text(json.dumps(task, indent=1))
         waited = 0.0
         while waited < self.timeout_s:
             if resp_path.exists():
@@ -50,6 +62,10 @@ class ManualLLMProvider:
                 except ValidationError as exc:
                     err_path.write_text(str(exc))
                     resp_path.rename(resp_path.with_suffix(".rejected.json"))
+                    # A cached answer that no longer validates had no task file: re-list the task, or the
+                    # operator never sees it and the run just waits out the timeout.
+                    if not task_path.exists():
+                        task_path.write_text(json.dumps(task, indent=1))
                 else:
                     err_path.unlink(missing_ok=True)
                     task_path.unlink(missing_ok=True)  # answered; response file stays as the cache

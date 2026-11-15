@@ -71,6 +71,10 @@ ARTICLE_TEXT = ("Acme Goods opened its new Leeds fulfilment hub in March 2025 an
 
 
 class _LLM:
+    # the pipeline asks the provider which model each step wants
+    extract_model = "fake-extract"
+    judge_model = "fake-judge"
+
     def __init__(self, date_phrase: str):
         self.date_phrase = date_phrase
 

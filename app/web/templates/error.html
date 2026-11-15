@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ 'Not found' if code == 404 else 'Something went wrong' }} · LeadPro{% endblock %}
+{% block content %}
+<div class="narrow">
+  <div class="card">
+    <div class="card-body empty">
+      <div class="art">{{ m.icon('search' if code == 404 else 'alert') }}</div>
+      <div class="eyebrow">Error {{ code }}</div>
+      <h2>{{ 'We could not find that' if code == 404 else ('That did not go through' if code < 500 else 'Something broke on our side') }}</h2>
+      <p class="dim">{{ detail }}</p>
+      <p class="row center">
+        {% if back %}<a class="btn btn-primary" href="{{ back }}">{{ m.icon('arrow-left') }}Go back</a>{% endif %}
+        <a class="btn {{ '' if back else 'btn-primary' }}" href="/">Back to runs</a>
+      </p>
+    </div>
+  </div>
+</div>
+{% endblock %}

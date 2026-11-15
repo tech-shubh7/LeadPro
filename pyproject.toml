@@ -6,19 +6,24 @@ requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.14",
     "dnspython>=2.7",
+    "fastapi>=0.115",
+    "google-genai>=1.0",
     "htmldate>=1.9",
     "httpx>=0.28",
+    "jinja2>=3.1",
     "openai>=3.41.0",
     "openpyxl>=3.1",
     "phonenumbers>=9.0",
     "psycopg[binary]>=3.2",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
+    "python-multipart>=0.0.20",
     "pyyaml>=6.0.3",
     "sqlalchemy>=2.0",
     "tldextract>=5.1",
     "trafilatura>=2.0",
     "typer>=0.15",
+    "uvicorn[standard]>=0.34",
 ]
 
 [project.scripts]

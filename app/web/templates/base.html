@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>{% block title %}LeadPro{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css?v={{ v }}">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%235b4ff5'/><stop offset='1' stop-color='%238b5cf6'/></linearGradient></defs><rect width='32' height='32' rx='9' fill='url(%23g)'/><circle cx='15' cy='15' r='6.5' fill='none' stroke='white' stroke-width='2.6'/><path d='M20 20l5 5' stroke='white' stroke-width='2.6' stroke-linecap='round'/></svg>">
+</head>
+<body>
+{% include "icons.html" %}
+{% block body %}
+<header class="mobilebar">
+  <a class="brand" href="/"><span class="mark"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></span>LeadPro</a>
+  <nav>
+    <a href="/" class="{{ 'on' if nav == 'runs' }}">Runs</a>
+    <a href="/new" class="{{ 'on' if nav == 'new' }}">New</a>
+    <a href="/suppressions" class="{{ 'on' if nav == 'suppressions' }}">Compliance</a>
+  </nav>
+</header>
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="/">
+      <span class="mark"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></span>
+      <span>LeadPro<small>Evidence-backed leads</small></span>
+    </a>
+    <a class="btn btn-primary side-cta" href="/new"><svg class="i"><use href="#i-plus"/></svg>New run</a>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-label">Workspace</div>
+      <a href="/" class="{{ 'on' if nav == 'runs' }}"><svg class="i"><use href="#i-grid"/></svg>Runs</a>
+      <a href="/new" class="{{ 'on' if nav == 'new' }}"><svg class="i"><use href="#i-spark"/></svg>New run</a>
+      <a href="/suppressions" class="{{ 'on' if nav == 'suppressions' }}"><svg class="i"><use href="#i-shield"/></svg>Compliance</a>
+    </nav>
+    <div class="side-foot">
+      <div class="engine" title="Where the reasoning steps run">
+        <div class="row"><span class="status-dot {{ '' if engine.ok else 'off' }}"></span><b>{{ engine.name }}</b>
+          <span class="muted">{{ 'connected' if engine.ok else 'no key' }}</span></div>
+        <div class="model">{{ engine.model }}</div>
+      </div>
+      <div class="xs faint">Every claim quoted · every email verified</div>
+    </div>
+  </aside>
+  <div class="main">
+    <main class="page" id="content">{% block content %}{% endblock %}</main>
+  </div>
+</div>
+{% endblock %}
+<script src="/static/app.js?v={{ v }}" defer></script>
+</body>
+</html>

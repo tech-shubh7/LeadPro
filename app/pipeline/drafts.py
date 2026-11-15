@@ -9,7 +9,6 @@ from datetime import date
 
 from pydantic import BaseModel
 
-from app.config import get_settings
 from app.pipeline.contacts import DecisionMaker
 from app.pipeline.extract import Extraction
 from app.pipeline.jobspec import JobSpec
@@ -60,8 +59,14 @@ def draft_is_grounded(draft: DraftOut, listing_by_id: dict[str, str], sender_tex
         return False
     if len(draft.body.split()) > MAX_BODY_WORDS:
         return False
-    allowed = " ".join(listing_by_id[i] for i in draft.cited_evidence_ids) + " " + sender_text
-    return all(n.strip(".,") in allowed for n in _NUMBER.findall(f"{draft.subject} {draft.body}"))
+    allowed = _numbers(" ".join(listing_by_id[i] for i in draft.cited_evidence_ids) + " " + sender_text)
+    return _numbers(f"{draft.subject} {draft.body}") <= allowed
+
+
+def _numbers(text: str) -> set[str]:
+    """Whole numbers as written, thousands separators ignored ('1,250' == '1250'). Compared as tokens, not
+    substrings: an invented '5' must not pass because '2025' or '50' appears in the evidence."""
+    return {n.strip(".,").replace(",", "") for n in _NUMBER.findall(text)} - {""}
 
 
 async def write_draft(dm: DecisionMaker, extraction: Extraction, score: Score, spec: JobSpec,
@@ -78,7 +83,7 @@ async def write_draft(dm: DecisionMaker, extraction: Extraction, score: Score, s
             f"Angle: {score.angle}\n\nVerified evidence:\n{listing}")
     signature = (sender.signature or sender.name) if sender else spec.client.name
     for _ in range(2):  # one retry if the first draft is not grounded
-        out = await llm.parse(get_settings().llm_judge_model, COLD_EMAIL_RULES, data, DraftOut, effort="medium")
+        out = await llm.parse(llm.judge_model, COLD_EMAIL_RULES, data, DraftOut, effort="medium")
         if draft_is_grounded(out, listing_by_id, sender_text):
             return Draft(out.subject.strip(), f"{out.body.strip()}\n\n{signature}\n\n{OPT_OUT_LINE}",
                          out.cited_evidence_ids)

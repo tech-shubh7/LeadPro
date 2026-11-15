@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Compliance · LeadPro{% endblock %}
+{% block content %}
+
+<div class="head">
+  <div>
+    <div class="eyebrow">Workspace</div>
+    <h1>Compliance</h1>
+    <div class="sub">Opt-outs and erasure requests, actioned in seconds. A suppressed domain is never researched again;
+      a suppressed address is never looked up, re-attached from cache, or delivered again.</div>
+  </div>
+</div>
+
+{% if done %}<div class="note note-ok" role="status">{{ m.icon('check-circle') }}<div>{{ done }}</div></div>{% endif %}
+
+<div class="cols">
+  <form class="card" method="post" action="/suppressions" data-busy>
+    <div class="card-head"><h2>{{ m.icon('ban') }}Suppress</h2></div>
+    <div class="card-body">
+      <p class="muted small">For an opt-out, a competitor, or a company the client already works with.</p>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="inline">
+        <label class="field"><span class="lbl">What</span>
+          <select name="kind"><option value="email">Email address</option><option value="domain">Whole domain</option></select>
+        </label>
+        <label class="field"><span class="lbl">Value</span>
+          <input type="text" name="value" required placeholder="someone@example.co.uk" autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <label class="field"><span class="lbl">Reason</span>
+        <input type="text" name="reason" required placeholder="Replied asking not to be contacted" autocomplete="off">
+      </label>
+    </div>
+    <div class="card-foot"><button type="submit" class="primary">{{ m.icon('ban') }}Suppress</button></div>
+  </form>
+
+  <form class="card" method="post" action="/suppressions/erase" data-busy
+        data-confirm="Permanently delete every stored record of this person and suppress the address? This cannot be undone.">
+    <div class="card-head"><h2>{{ m.icon('trash') }}Erase a person</h2></div>
+    <div class="card-body">
+      <p class="muted small">UK GDPR / DPDP erasure. Deletes the stored contact record and suppresses the address so a
+        later lookup cannot bring it back. The never-repeat record is kept at company level only.</p>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label class="field"><span class="lbl">Email</span>
+        <input type="email" name="email" required placeholder="someone@example.co.uk" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field"><span class="lbl">Reason</span>
+        <input type="text" name="reason" required placeholder="Erasure request received today" autocomplete="off">
+      </label>
+    </div>
+    <div class="card-foot"><button type="submit" class="btn-danger">{{ m.icon('trash') }}Erase and suppress</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Suppression list</h2>
+    <span class="pill">{{ rows.total | num }}</span>
+    <span class="spacer"></span>
+    <form method="get" class="filters" role="search">
+      <label class="search"><span class="sr">Search suppressions</span>{{ m.icon('search') }}
+        <input type="search" name="q" value="{{ q }}" placeholder="Search…"></label>
+      <button type="submit">Search</button>
+    </form>
+  </div>
+  {% if rows.items %}
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Kind</th><th>Value</th><th>Reason</th><th class="n">Added</th></tr></thead>
+    <tbody>
+      {% for s in rows.items %}
+      <tr>
+        <td><span class="pill {{ 'pill-violet' if s.kind == 'domain' else 'pill-info' }}">{{ m.icon('globe' if s.kind == 'domain' else 'mail') }}{{ s.kind }}</span></td>
+        <td class="mono small">{{ s.value }}</td>
+        <td class="small wrap dim">{{ s.reason }}</td>
+        <td class="n small muted nowrap">{{ s.created_at | when }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {{ m.pager(rows, request) }}
+  {% else %}
+  <div class="empty"><div class="art">{{ m.icon('shield') }}</div><h2>{{ "No match" if q else "Nothing suppressed yet" }}</h2>
+    <p>Anything added above appears here and applies to every future run.</p></div>
+  {% endif %}
+</div>
+{% endblock %}

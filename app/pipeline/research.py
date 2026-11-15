@@ -13,7 +13,7 @@ from app.pipeline.sources import FIRST_PARTY_KINDS
 from app.providers.registry.companies_house import find_company_numbers, find_legal_names
 
 MAX_SITE_PAGES = 8
-MAX_SEED_ARTICLES = 3
+MAX_SEED_PAGES = 5  # outside articles (seed/search/news hits) fetched per company
 PAGE_KEYWORDS = {
     "about": ("about", "who-we-are", "our-story", "company"),
     "team": ("team", "people", "leadership", "management", "our-people", "board", "meet"),
@@ -105,19 +105,25 @@ async def research(candidate: Candidate, fetcher: Fetcher, phone_region: str,
     if live is not None:
         bundle.pages[live.final_url] = live
         links = pick_internal_links(live.html, live.final_url, candidate.domain)[:MAX_SITE_PAGES]
-    seed_urls = list(dict.fromkeys(h.link for h in bundle.seed_hits if h.kind not in FIRST_PARTY_KINDS))[:MAX_SEED_ARTICLES + 2]
+    seed_urls = list(dict.fromkeys(h.link for h in bundle.seed_hits if h.kind not in FIRST_PARTY_KINDS))[:MAX_SEED_PAGES]
     results = await asyncio.gather(*(fetcher.fetch(u) for u in dict.fromkeys(links + seed_urls)))
     for r in results:
         if r.ok:
             bundle.pages[r.final_url] = r
 
-    site_pages = [p for p in bundle.pages.values() if normalize_domain(p.final_url) == candidate.domain]
-    blob_text = "\n".join(visible_text(p.html) for p in site_pages)
-    blob_html = "\n".join(p.html for p in site_pages)
-    bundle.emails = extract_emails(blob_text + "\n" + re.sub(r"mailto:", " ", blob_html), candidate.domain)
+    site_html = [p.html for p in bundle.pages.values() if normalize_domain(p.final_url) == candidate.domain]
+    # HTML parsing and phone matching are CPU-bound: off the event loop, like page text extraction.
+    bundle.emails, bundle.phones, bundle.company_numbers, bundle.legal_names = await asyncio.to_thread(
+        contact_data, site_html, candidate.domain, phone_region)
+    return bundle
+
+
+def contact_data(site_html: list[str], domain: str, phone_region: str):
+    """(emails, phones, company numbers, legal names) printed on the company's own pages."""
+    blob_text = "\n".join(visible_text(h) for h in site_html)
+    blob_html = "\n".join(site_html)
+    emails = extract_emails(blob_text + "\n" + re.sub(r"mailto:", " ", blob_html), domain)
     # Phones from visible text plus tel:/WhatsApp links only; raw HTML/scripts give false numbers.
     links_only = " ".join(re.findall(r'(?:href=["\'](?:tel:|https?://(?:wa\.me|api\.whatsapp\.com)[^"\']*))([^"\']*)', blob_html))
-    bundle.phones = extract_phones(blob_text + "\n" + links_only + "\n" + " ".join(re.findall(r"wa\.me/\+?\d{8,15}", blob_html)), phone_region)
-    bundle.company_numbers = find_company_numbers(blob_text)
-    bundle.legal_names = find_legal_names(blob_text, candidate.domain)
-    return bundle
+    phones = extract_phones(blob_text + "\n" + links_only + "\n" + " ".join(re.findall(r"wa\.me/\+?\d{8,15}", blob_html)), phone_region)
+    return emails, phones, find_company_numbers(blob_text), find_legal_names(blob_text, domain)

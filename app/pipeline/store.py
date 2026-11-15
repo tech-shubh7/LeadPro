@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.countries.base import REGISTRY_MATCH_NUMBER
+from app.countries.base import REGISTRY_MATCH_NUMBER, REGISTRY_MATCH_SOURCE
 from app.models.enums import EmailVerdict, EvidenceKind, LeadStatus
 from app.models.tables import Company, Contact, Delivery, Evidence, Job, JobLead, Suppression
 from app.pipeline.export import LeadResult
@@ -79,9 +79,27 @@ def erase_person_by_email(session: Session, email: str, reason: str) -> int:
     email = email.strip().lower()
     contacts = session.scalars(select(Contact).where(Contact.email == email)).all()
     for contact in contacts:
+        _detach_deliveries(session, contact)
         session.delete(contact)
     add_suppression(session, "email", email, reason)
     return len(contacts)
+
+
+def _detach_deliveries(session: Session, contact: Contact) -> None:
+    """Keep the never-repeat record of a delivery while the person's data is erased. The FK would set
+    contact_id to NULL on delete, but (client, company, NULL) is unique (NULLS NOT DISTINCT), so a second
+    erased person at the same company, or an existing company-only delivery, would make the erasure fail.
+    One company-level row per client is kept; the person-level rows are dropped."""
+    rows = session.scalars(select(Delivery).where(Delivery.contact_id == contact.id)).all()
+    for row in rows:
+        company_level = session.scalar(select(Delivery.id).where(
+            Delivery.client_key == row.client_key, Delivery.company_id == row.company_id,
+            Delivery.contact_id.is_(None)))
+        if company_level is None:
+            row.contact_id = None
+        else:
+            session.delete(row)
+        session.flush()
 
 
 def upsert_company(session: Session, domain: str, country: str) -> Company:
@@ -97,20 +115,31 @@ def _company_by_registry(session: Session, registry_name: str | None, registry_i
 def resolve_company(session: Session, domain: str, country: str, registry: dict) -> Company:
     """Identity resolution. A company number printed on the company's own site is identity-grade, so a
     second domain of an already-known registered company resolves to the existing record. Name-only
-    registry matches never merge records (two brands can share a name)."""
-    if registry.get("match") == REGISTRY_MATCH_NUMBER:
+    registry matches never merge records (two brands can share a name). A number stated by the discovery
+    source itself (an award notice) is identity-grade too, as the runner's duplicate guard already treats it."""
+    if registry.get("match") in (REGISTRY_MATCH_NUMBER, REGISTRY_MATCH_SOURCE):
         if existing := _company_by_registry(session, registry.get("registry_name"), registry.get("registry_id")):
             return existing
     return upsert_company(session, domain, country)
 
 
 def save_rejection(session: Session, job: Job, domain: str, country: str, reason: str, score=None) -> None:
+    """Records why a candidate was rejected. If this job already has a row for the company (a second
+    domain of an already-saved company, e.g. a duplicate caught by registry number), that row wins: a
+    rejection must never overwrite a lead, nor raise on the (job, company) unique key and fail the job."""
     company = upsert_company(session, domain, country)
+    if session.scalar(select(JobLead.id).where(JobLead.job_id == job.id, JobLead.company_id == company.id)):
+        return
     lead = JobLead(job_id=job.id, company_id=company.id, status=LeadStatus.REJECTED, reject_reason=reason[:2000])
     if score is not None:  # keep the judge's reasoning for tuning the ICP/playbook
         lead.fit_score, lead.intent_score, lead.timing_score = score.fit, score.intent, score.timing
         lead.total_score, lead.why_summary, lead.risks = score.total, score.why, score.risks
-    session.add(lead)
+    try:
+        with session.begin_nested():
+            session.add(lead)
+            session.flush()
+    except IntegrityError:
+        pass  # another worker recorded this company for the job concurrently; its row stands
 
 
 def known_verified_emails(domain: str, max_age_days: int = 60) -> dict[tuple[str, str], str]:
@@ -132,19 +161,25 @@ def save_lead(session: Session, job: Job, lead: LeadResult, country: str) -> dic
     Returns {(first, last): contact_id} for the lead's decision-makers."""
     b, e, reg = lead.bundle, lead.extraction, lead.registry
     company = resolve_company(session, b.domain, country, reg)
-    company.name = e.company_name
     holder = _company_by_registry(session, reg.get("registry_name"), reg.get("registry_id"))
     if reg and (holder is None or holder.id == company.id):
         # A name-only match to a number another record already holds is kept on the lead/export, not stored
-        # here: the unique index allows one company record per registered company.
-        company.legal_name = reg.get("legal_name") or company.legal_name
-        company.registry_name = reg.get("registry_name")
-        company.registry_id = reg.get("registry_id")
-        company.registry_entity_type = reg.get("entity_type")
-        company.registry_status = reg.get("status")
-        if reg.get("incorporated_on"):
-            company.incorporated_on = date.fromisoformat(reg["incorporated_on"])
-        company.registry_checked_at = datetime.now(UTC)
+        # here: the unique index allows one company record per registered company. A concurrent worker can
+        # claim the same number between the check and the flush; then the identity stays with that row.
+        try:
+            with session.begin_nested():
+                company.legal_name = reg.get("legal_name") or company.legal_name
+                company.registry_name = reg.get("registry_name")
+                company.registry_id = reg.get("registry_id")
+                company.registry_entity_type = reg.get("entity_type")
+                company.registry_status = reg.get("status")
+                if reg.get("incorporated_on"):
+                    company.incorporated_on = date.fromisoformat(reg["incorporated_on"])
+                company.registry_checked_at = datetime.now(UTC)
+                session.flush()
+        except IntegrityError:
+            session.refresh(company)  # the rolled-back savepoint left the row expired
+    company.name = e.company_name
     company.last_fetched_at = datetime.now(UTC)
     if phone := next((p for p in b.phones), None):
         company.company_phone, company.company_phone_type = phone.e164, phone.phone_type
@@ -182,17 +217,45 @@ def save_lead(session: Session, job: Job, lead: LeadResult, country: str) -> dic
         contact_ids[(p.first_name, p.last_name)] = contact.id
 
     sc = lead.score
-    _get_or_create(
-        session, JobLead, {"job_id": job.id, "company_id": company.id},
+    fields = dict(
         fit_score=sc.fit, intent_score=sc.intent, timing_score=sc.timing, total_score=sc.total,
         why_summary=sc.why, outreach_angle=sc.angle, risks=sc.risks, alive_proofs=lead.alive_proofs,
         outreach_allowed=lead.outreach_allowed, outreach_reason=lead.outreach_reason,
         status=LeadStatus.QUALIFIED if lead.verified_people else LeadStatus.QUALIFIED_NO_CONTACT, lead_tier=lead.tier,
+        reject_reason=None,
         email_drafts=[{"contact_id": contact_ids[k], "subject": d.subject, "body": d.body, "evidence_ids": d.evidence_ids}
                       for k, d in lead.drafts.items() if k in contact_ids],
     )
+    job_lead = _get_or_create(session, JobLead, {"job_id": job.id, "company_id": company.id}, **fields)
+    if job_lead.status == LeadStatus.REJECTED:
+        # Another domain of this company was rejected earlier in the run (row already existed): the
+        # qualified result is the truth for the company, so it replaces the rejection.
+        for k, v in fields.items():
+            setattr(job_lead, k, v)
+        session.flush()
     lead.company_id = company.id
     return contact_ids
+
+
+def set_ranks(session: Session, job_id: int, company_ids_in_rank_order: list[int | None]) -> None:
+    """Stores the delivered rank (1 = best) the export shows, so the database and the sheet agree."""
+    for rank, company_id in enumerate(company_ids_in_rank_order, 1):
+        if company_id is None:
+            continue
+        lead = session.scalar(select(JobLead).where(JobLead.job_id == job_id, JobLead.company_id == company_id))
+        if lead is not None:
+            lead.rank = rank
+
+
+def mark_not_delivered(session: Session, job_id: int, company_ids: list[int | None], reason: str) -> None:
+    """A lead that was saved but is not being delivered becomes a rejection with its reason, so the
+    stored statuses always match what the client received."""
+    for company_id in company_ids:
+        if company_id is None:
+            continue
+        lead = session.scalar(select(JobLead).where(JobLead.job_id == job_id, JobLead.company_id == company_id))
+        if lead is not None:
+            lead.status, lead.reject_reason, lead.rank = LeadStatus.REJECTED, reason, None
 
 
 def record_deliveries(session: Session, job: Job, delivered: list[tuple[LeadResult, dict]]) -> None:

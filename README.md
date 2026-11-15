@@ -13,7 +13,50 @@ uv run alembic upgrade head
 
 API keys (`.env`): `SERPER_API_KEY`, `OPENAI_API_KEY`, `COMPANIES_HOUSE_API_KEY` (free), `GENERECT_API_KEY`.
 
-## Run a job
+## The product (web)
+
+```bash
+uv run leadpro web                 # http://127.0.0.1:8000
+```
+
+Three screens, in the order you use them.
+
+**1. Ask.** Enter the client's website, who they want to reach in plain words, and how many leads. That
+is the whole input.
+
+**2. Review the plan.** We read the client's own site, work out what they sell, and draft the ideal
+customer profile and the buying signals to search for. Everything is editable, because a wrong profile
+is the one error the quote, date and email checks downstream cannot catch. Nothing is spent on research
+until you press start, and the spend cap is on the button.
+
+**3. Watch it work.** Counters update live as each lead is verified and saved. When it finishes you get
+the leads, the companies that passed every check except a verified email, the full list of what was
+dropped and why, the per-provider spend, and XLSX/CSV exports.
+
+Open any lead to see the chain behind it: each signal with its verbatim quote, how that date was
+established, corroborating sources, the decision-makers with the page they were found on, and the
+outreach draft with the evidence it cites.
+
+**Compliance** is a screen, not a ticket: suppress a domain or address, or action a UK GDPR / DPDP
+erasure request, in seconds.
+
+Server-rendered FastAPI and Jinja: no build step, no CDN, no client framework. Pages are 1.4–3.1 KB
+gzipped and a static bundle of 5.9 KB that is then cached permanently. Every list is paginated and every
+aggregate is computed in SQL, and a test asserts a page issues the same number of queries for 18 leads
+as for 3.
+
+Runs execute as background tasks in this one process and report progress only through the database, so a
+reload or a second tab shows the same truth. That is deliberate for one operator; the Postgres job queue
+in `docs/RESEARCH_ENGINE.md` is what replaces it when runs must survive a restart. A crash mid-run leaves
+the job marked `failed` with everything it had already saved.
+
+The console binds to localhost and is read-only apart from starting a run and the two compliance
+controls. To expose it anywhere else set `WEB_AUTH_TOKEN` (the CLI refuses to bind beyond localhost
+without one) and put it behind TLS.
+
+The CLI remains for scripted and repeatable runs from a job file: see [docs/WORKFLOWS.md](docs/WORKFLOWS.md).
+
+## CLI (scripted runs)
 
 ```bash
 uv run leadpro validate jobs/example_uk.yaml          # free check of the job file

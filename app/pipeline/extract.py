@@ -1,4 +1,5 @@
 """Step 2b: LLM extraction (cheap model) + code-level quote verification + trusted dating."""
+import asyncio
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -175,7 +176,7 @@ async def extract(bundle: ResearchBundle, spec: JobSpec, llm: OpenAIProvider, to
     signal_types = ", ".join(s.type for s in spec.playbook.signals)
     target = f"Target: {bundle.target_name or bundle.domain}" + (f" ({bundle.target_category})" if bundle.target_category else "")
     out = await llm.parse(
-        get_settings().llm_extract_model,
+        llm.extract_model,
         f"{target}. First decide whether the sources are about this target (set sources_match_target=false if the "
         "website belongs to an unrelated organisation with a similar name). Extract facts about the company whose website is "
         f"{bundle.domain}. Every item must cite the source url it came from and quote the exact text "
@@ -187,6 +188,20 @@ async def extract(bundle: ResearchBundle, spec: JobSpec, llm: OpenAIProvider, to
         data,
         ExtractOut,
     )
+    # Quote checks, dating and page parsing are CPU-bound: off the event loop.
+    return await asyncio.to_thread(verified_extraction, out, bundle, texts, today)
+
+
+def _fetched_url(url: str, fetched: dict[str, str], by_canonical: dict[str, str]) -> str:
+    """The URL as it was fetched. The model may cite 'https://www.x.com/news/a/' for the fetched
+    'https://x.com/news/a': quote checks accept that, so dating and stored evidence must use the same page."""
+    return url if url in fetched else by_canonical.get(canonical_url(url), url)
+
+
+def verified_extraction(out: ExtractOut, bundle: ResearchBundle, texts: dict[str, str], today: date) -> Extraction:
+    by_canonical = {canonical_url(u): u for u in texts}
+    for item in (*out.facts, *out.signals, *out.people):
+        item.source_url = _fetched_url(item.source_url, texts, by_canonical)
     facts_v, rej1 = verify_claims([Claim(f.claim, f.source_url, f.quote) for f in out.facts], texts)
     signals_v, rej2 = verify_claims([Claim(s.claim, s.source_url, s.quote) for s in out.signals], texts)
     people_v, rej3 = verify_claims([Claim(f"{p.first_name} {p.last_name}", p.source_url, p.quote) for p in out.people], texts)

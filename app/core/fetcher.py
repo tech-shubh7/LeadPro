@@ -18,6 +18,7 @@ import trafilatura
 from lxml import html as lxml_html
 
 from app.config import get_settings
+from app.core.netguard import guarded_client
 
 USER_AGENT = "LeadProResearchBot/0.1 (B2B research; respects robots.txt)"
 MIN_HOST_INTERVAL_S = 1.0
@@ -83,6 +84,20 @@ class PageCache:
         data["from_cache"] = True
         return FetchResult(**data)
 
+    def prune(self, max_age: timedelta) -> int:
+        """Deletes cached pages older than `max_age`. Cached pages include team pages, which name people:
+        they are kept only as long as they are useful, not indefinitely."""
+        cutoff = time.time() - max_age.total_seconds()
+        removed = 0
+        for path in self.root.glob("*.json"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except FileNotFoundError:
+                pass
+        return removed
+
     def put(self, result: FetchResult) -> None:
         self._path(result.url).write_text(json.dumps(asdict(result) | {"from_cache": False}))
 
@@ -90,7 +105,7 @@ class PageCache:
 class Fetcher:
     def __init__(self, client: httpx.AsyncClient | None = None, cache: PageCache | None = None):
         settings = get_settings()
-        self.client = client or httpx.AsyncClient(
+        self.client = client or guarded_client(
             headers={"User-Agent": USER_AGENT, "Accept-Language": "en-GB,en;q=0.8"}, follow_redirects=True, timeout=20
         )
         ttl = None if settings.is_dev else timedelta(hours=settings.page_cache_ttl_hours)
@@ -141,13 +156,29 @@ class Fetcher:
             return FetchResult(url, url, 0, "", "", now, blocked_reason="disallowed by robots.txt")
         await self._pace(urlparse(url).netloc)
         try:
-            resp = await self.client.get(url)
+            async with self.client.stream("GET", url) as resp:
+                final_url = str(resp.url)
+                is_html = "html" in resp.headers.get("content-type", "")
+                declared = resp.headers.get("content-length", "")
+                if declared.isdigit() and int(declared) > MAX_PAGE_BYTES:
+                    return FetchResult(url, final_url, resp.status_code, "", "", now, blocked_reason="page too large")
+                if not is_html:  # PDFs, images, video: never read, so never downloaded
+                    return FetchResult(url, final_url, resp.status_code, "", "", now)
+                body = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                    if len(body) > MAX_PAGE_BYTES:  # no or false Content-Length: stop reading, don't buffer it all
+                        return FetchResult(url, final_url, resp.status_code, "", "", now, blocked_reason="page too large")
+                encoding = resp.charset_encoding or "utf-8"
         except httpx.HTTPError as exc:
             return FetchResult(url, url, 0, "", "", now, blocked_reason=f"fetch error: {type(exc).__name__}")
-        if len(resp.content) > MAX_PAGE_BYTES:
-            return FetchResult(url, str(resp.url), resp.status_code, "", "", now, blocked_reason="page too large")
-        page_html = resp.text if "html" in resp.headers.get("content-type", "") else ""
-        result = FetchResult(url, str(resp.url), resp.status_code, page_html, extract_main_text(page_html) if page_html else "", now)
+        try:
+            page_html = bytes(body).decode(encoding, errors="replace")
+        except LookupError:  # a charset name Python doesn't know (e.g. 'utf8mb4')
+            page_html = bytes(body).decode("utf-8", errors="replace")
+        # trafilatura/lxml are CPU-bound: run them off the event loop so concurrent fetches keep going.
+        text = await asyncio.to_thread(extract_main_text, page_html)
+        result = FetchResult(url, final_url, resp.status_code, page_html, text, now)
         if result.ok:
             self.cache.put(result)
         return result

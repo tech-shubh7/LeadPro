@@ -38,20 +38,36 @@ THIRD_PARTY_DOMAINS = frozenset({
     "reddit.com", "prnewswire.com", "businesswire.com", "globenewswire.com", "google.com", "apple.com",
     "studysmarter.co.uk",
     # job aggregators / career-advice and company-listing sites (never a company's own website)
-    "expertini.com", "jobleads.com", "jobgether.com", "talent.com", "jooble.org", "careerjet.co.uk", "jobrapido.com",
+    "expertini.com", "jobgether.com", "talent.com", "jooble.org", "careerjet.co.uk", "jobrapido.com",
     "neuvoo.co.uk", "tealhq.com", "wfh.team", "flowremote.io", "jobs.workable.com", "huntukvisasponsors.com",
     "justlondonjobs.com", "leicesterjobs.uk", "cwjobs.co.uk", "jobserve.com", "talents.studysmarter.co.uk",
     "digitalagencynetwork.com", "designrush.com", "clutch.co", "goodfirms.co", "selectedfirms.co", "techbehemoths.com",
     "sortlist.com", "getlatka.com", "zoominfo.com", "rocketreach.co", "apollo.io", "lusha.com", "dnb.com",
-    "indeed.co.uk", "uk.indeed.com", "lbbonline.com", "prolificnorth.co.uk", "businesscloud.co.uk",
-    "thebusinessdesk.com", "bdaily.co.uk", "yahoo.com", "finance.yahoo.com",
+    "uk.indeed.com", "lbbonline.com", "businesscloud.co.uk",
+    "thebusinessdesk.com", "bdaily.co.uk", "finance.yahoo.com",
 })
 STAFFING_WORDS = ("recruitment", "recruiter", "staffing", "manpower", "placement", "headhunt")
 GL = {"GB": "uk", "US": "us", "IN": "in"}
 
 
+# Brands that host pages about other companies under many TLDs and subdomains (glassdoor.be,
+# uk.indeed.com, jobs.ashbyhq.com). Matched on any label of the domain, not the exact host, so a new
+# country site cannot pass for a company's own website. Only names that are never a buyer's own brand.
+THIRD_PARTY_BRANDS = frozenset({
+    "indeed", "glassdoor", "ziprecruiter", "monster", "linkedin", "simplyhired", "adzuna", "jooble", "careerjet",
+    "totaljobs", "jobrapido", "neuvoo", "jobgether", "expertini", "ashbyhq", "greenhouse", "smartrecruiters",
+    "recruitee", "teamtailor", "personio", "bamboohr", "jobvite", "icims", "myworkdayjobs", "workable",
+    "breezy", "remoteok", "weworkremotely", "nodesk", "remotive", "wellfound", "himalayas", "workingnomads",
+    "builtin", "otta", "crunchbase", "trustpilot", "wikipedia", "facebook", "instagram", "youtube", "tiktok",
+})
+# A search title like "Temporal jobs - ZipRecruiter" names the company but the page is a listing about it.
+LISTING_WORDS = re.compile(r"\b(jobs?|careers? at|hiring|vacanc(?:y|ies)|salar(?:y|ies)|reviews?|job openings)\b", re.I)
+
+
 def is_third_party(domain: str) -> bool:
-    return domain in THIRD_PARTY_DOMAINS or domain.endswith((".gov.uk", ".ac.uk", ".nhs.uk", ".police.uk"))
+    if domain in THIRD_PARTY_DOMAINS or domain.endswith((".gov.uk", ".ac.uk", ".nhs.uk", ".police.uk")):
+        return True
+    return any(label in THIRD_PARTY_BRANDS for label in domain.split(".")[:-1])
 
 
 @dataclass
@@ -122,7 +138,9 @@ async def resolve_domain(serper: SerperClient, name: str, gl: str, category: str
     query = f'"{name}" {category} official website' if category else f'"{name}" official website'
     named = [h for h in await serper.query(query, gl=gl, num=10)
              if (d := normalize_domain(h.link)) and not is_third_party(d)
-             and (token in d.replace("-", "") or token in h.title.lower())]
+             and (token in d.replace("-", "")
+                  # a title-only match must not be a listing page about the company
+                  or (token in h.title.lower() and not LISTING_WORDS.search(h.title)))]
     # Prefer a result that also describes the right kind of business ('TRIP' the drinks brand, not trip.com).
     words = _category_words(category)
     on_topic = [h for h in named if any(w in f"{h.title} {h.snippet}".lower() for w in words)]
@@ -147,7 +165,7 @@ async def plan_queries(spec: JobSpec, llm: OpenAIProvider, stats: list[QueryStat
         f'- [{s.kind}] "{s.query}": {s.hits} hits, {s.targets} target companies; non-targets: {s.rejected_types}'
         for s in stats) or "(none yet)"
     out = await llm.parse(
-        get_settings().llm_judge_model,
+        llm.judge_model,
         "You plan Google searches that surface SPECIFIC companies matching the ICP and currently showing one of the "
         f"buying signals. Write {n} new queries. Prefer queries that return the companies themselves or news about "
         "named companies (trade press, regional business news, funding/expansion/launch announcements, company "
@@ -167,7 +185,7 @@ async def triage(spec: JobSpec, llm: OpenAIProvider, hits: list[SearchHit]) -> l
         return []
     data = "\n".join(f"[{i}] ({h.kind}) {h.title} — {h.snippet} <{h.link}>" for i, h in enumerate(hits))
     out = await llm.parse(
-        get_settings().llm_extract_model,
+        llm.extract_model,
         "Classify every search result. For each: which single company it is ABOUT (exact name as written in the "
         "line, or null), what kind of entity that is, whether the link is that company's own website, how well the "
         "company fits the ICP judging only from the line (0-10), and the buying signal if one is visible. A job ad "
@@ -189,16 +207,37 @@ async def triage(spec: JobSpec, llm: OpenAIProvider, hits: list[SearchHit]) -> l
 
 # ---- main loop -------------------------------------------------------------------------------
 
+RESOLVE_CONCURRENCY = 6
+# Searches held back from query rounds for finding each named target's own website. Without this the
+# rounds could spend the whole budget, and every company triage named would then be dropped unresolved.
+RESOLVE_RESERVE = 10
+
+
 async def discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exclude: set[str], limit: int,
                    stats_out: list | None = None, today: date | None = None, sources=None) -> list[Candidate]:
+    """Candidates with a resolved own domain, best first. If anything stops discovery part-way, the
+    exception carries `.candidates` (everything resolved so far) so the run keeps them."""
+    by_domain: dict[str, Candidate] = {}
+    stats: list[QueryStat] = []
+    try:
+        return await _discover(spec, serper, llm, exclude, limit, today or date.today(), sources, by_domain, stats)
+    except Exception as exc:
+        # Whatever stopped us (cost cap, a provider outage), the companies already resolved are good.
+        exc.candidates = list(by_domain.values())
+        raise
+    finally:
+        if stats_out is not None:
+            stats_out.extend(vars(s) for s in stats)
+
+
+async def _discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exclude: set[str], limit: int,
+                    today: date, sources, by_domain: dict[str, Candidate], stats: list[QueryStat]) -> list[Candidate]:
     settings = get_settings()
-    today = today or date.today()
     gl = GL.get(spec.countries[0], "uk")
     tbs = "qdr:m" if spec.freshness_days <= 31 else "qdr:y"  # coarse; exact window enforced on trusted dates
     budget = spec.max_search_queries
-    stats: list[QueryStat] = []
+    reserve = min(RESOLVE_RESERVE, max(1, limit), budget // 3)
     by_name: dict[str, Candidate] = {}
-    by_domain: dict[str, Candidate] = {}
     for seed in spec.seeds:  # researched first; still subject to every downstream check
         domain = normalize_domain(seed.domain)
         if domain and domain not in exclude and domain not in by_domain:
@@ -223,15 +262,17 @@ async def discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exc
                                  for s in spec.playbook.signals for q in s.queries]
 
     for _round in range(0 if spec.sources_only else settings.discovery_rounds):
+        if budget <= reserve:
+            break
         if not queue:
-            queue = await plan_queries(spec, llm, stats, n=min(settings.discovery_queries_per_round, budget))
-        batch, queue = queue[:budget], []
+            queue = await plan_queries(spec, llm, stats, n=min(settings.discovery_queries_per_round, budget - reserve))
+        batch, queue = queue[:max(0, budget - reserve)], []
         if not batch:
             break
         budget -= len(batch)
         results = await asyncio.gather(*(serper.query(q.query, kind=q.kind, gl=gl, num=10, tbs=tbs) for q in batch))
-        round_stats = [QueryStat(q.query, q.kind, q.signal_type, hits=len(r)) for q, r in zip(batch, results)]
-        stats += round_stats
+        round_stats = [QueryStat(q.query, q.kind, q.signal_type, hits=len(r)) for q, r in zip(batch, results, strict=True)]
+        stats.extend(round_stats)
         flat = [(i, h) for i, r in enumerate(results) for h in r]
         triaged = await triage(spec, llm, [h for _, h in flat])
 
@@ -239,7 +280,9 @@ async def discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exc
             qi, hit = flat[t.hit_index]
             st = round_stats[qi]
             if t.entity_type != "target_company" or not t.company_name:
-                st.rejected_types[t.entity_type] = st.rejected_types.get(t.entity_type, 0) + 1
+                # A target whose name is not literally in the result is not trusted (no invented names).
+                why = t.entity_type if t.entity_type != "target_company" else "unnamed_target"
+                st.rejected_types[why] = st.rejected_types.get(why, 0) + 1
                 continue
             if t.icp_fit < settings.triage_min_fit:
                 st.rejected_types["low_fit"] = st.rejected_types.get("low_fit", 0) + 1
@@ -260,23 +303,39 @@ async def discover(spec: JobSpec, serper: SerperClient, llm: OpenAIProvider, exc
                 cand.triage_note = t.signal_summary
 
         strong = [c for c in by_name.values() if c.prior >= 0.6]
-        if len(strong) >= limit or budget <= 0:
+        if len(strong) >= limit or budget <= reserve:
             break
 
-    # Resolve official domains, strongest first, within the remaining query budget.
-    ranked = sorted(by_name.values(), key=lambda c: -c.prior)
-    for cand in ranked:
-        if len(by_domain) >= limit:
+    # Resolve official domains, strongest first, within the remaining query budget. Lookups run in small
+    # parallel batches (sized to what is still needed), then are added in rank order, so the result is the
+    # same as resolving one at a time, just without waiting on each search in turn.
+    pending = sorted(by_name.values(), key=lambda c: -c.prior)
+    while pending and len(by_domain) < limit:
+        batch: list[Candidate] = []
+        while pending and len(batch) < min(RESOLVE_CONCURRENCY, max(1, limit - len(by_domain))):
+            cand = pending.pop(0)
+            if not cand.domain:
+                if budget <= 0:
+                    continue
+                budget -= 1
+            batch.append(cand)
+        if not batch:
             break
-        if not cand.domain:
-            if budget <= 0:
-                continue
-            budget -= 1
-            cand.domain = await resolve_domain(serper, cand.name_hint, gl, cand.category) or ""
-        if cand.domain and cand.domain not in exclude and cand.domain not in by_domain:
-            by_domain[cand.domain] = cand
-    for cand in by_domain.values():  # real URLs for the evidence we will actually use
-        cand.seed_hits = [replace(h, link=await serper.resolve_redirect(h.link)) for h in cand.seed_hits]
-    if stats_out is not None:
-        stats_out.extend(vars(s) for s in stats)
+        resolved = await asyncio.gather(*(_resolved_domain(serper, c, gl) for c in batch))
+        for cand, domain in zip(batch, resolved, strict=True):
+            cand.domain = domain
+            if len(by_domain) < limit and domain and domain not in exclude and domain not in by_domain:
+                by_domain[domain] = cand
+
+    async def real_links(cand: Candidate) -> None:  # real URLs for the evidence we will actually use
+        links = await asyncio.gather(*(serper.resolve_redirect(h.link) for h in cand.seed_hits))
+        cand.seed_hits = [replace(h, link=link) for h, link in zip(cand.seed_hits, links, strict=True)]
+
+    await asyncio.gather(*(real_links(c) for c in by_domain.values()))
     return list(by_domain.values())
+
+
+async def _resolved_domain(serper: SerperClient, cand: Candidate, gl: str) -> str:
+    if cand.domain:
+        return cand.domain
+    return await resolve_domain(serper, cand.name_hint, gl, cand.category) or ""

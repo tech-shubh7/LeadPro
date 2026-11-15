@@ -3,7 +3,9 @@ Paths and fields from the official swagger specs: /search/companies (items: titl
 company_type, company_status, date_of_creation), /company/{n} (company_name, type, company_status,
 date_of_creation, sic_codes), /company/{n}/officers (items: name, officer_role, appointed_on, resigned_on).
 """
+import asyncio
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -95,13 +97,30 @@ def parse_officer_name(name: str) -> tuple[str, str]:
     return (parts[0].title(), parts[-1].title()) if len(parts) > 1 else (name.title(), "")
 
 
+# Companies House allows 600 requests per 5 minutes per key (docs/OPEN_ITEMS F4). Officer matching makes many
+# calls per company and 8 companies run at once, so requests are spaced to stay under it instead of hitting
+# 429s that fail leads after the retries run out.
+MIN_REQUEST_INTERVAL_S = 0.5
+
+
 class CompaniesHouseClient:
-    def __init__(self, client: httpx.AsyncClient | None = None):
+    def __init__(self, client: httpx.AsyncClient | None = None, min_interval_s: float = MIN_REQUEST_INTERVAL_S):
         key = get_settings().companies_house_api_key
         self.client = client or httpx.AsyncClient(base_url=BASE_URL, auth=(key, ""), timeout=20)
+        self._min_interval_s = min_interval_s
+        self._pace_lock = asyncio.Lock()
+        self._next_at = 0.0
+
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        async with self._pace_lock:
+            wait = self._next_at - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._next_at = time.monotonic() + self._min_interval_s
+        return await request_with_retry(self.client, method, url, **kwargs)
 
     async def profile(self, number: str) -> RegistryRecord | None:
-        resp = await request_with_retry(self.client, "GET", f"/company/{number}")
+        resp = await self._request("GET", f"/company/{number}")
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -124,7 +143,7 @@ class CompaniesHouseClient:
         with 'Mulberry Bush Nursery Ltd'), then the looser normalisation, then spacing-insensitive ('HempWell'
         vs 'HEMP WELL LIMITED'). The first level with any exact active match decides; more than one is ambiguous
         and returns None. A dissolved company that merely shares a brand's name never causes a rejection."""
-        resp = await request_with_retry(self.client, "GET", "/search/companies", params={"q": name, "items_per_page": 20})
+        resp = await self._request("GET", "/search/companies", params={"q": name, "items_per_page": 20})
         resp.raise_for_status()
         items = [i for i in resp.json().get("items", []) if i.get("company_status") == "active"]
         for norm in (strict_company_name, normalize_company_name, lambda n: normalize_company_name(n).replace(" ", "")):
@@ -140,7 +159,7 @@ class CompaniesHouseClient:
         """The one active company where this person (already quote-verified as working at the target) is a
         current officer AND whose registered name shares a distinctive word with the brand or domain.
         Brand names often differ from registered names; the officer link is what ties them together."""
-        resp = await request_with_retry(self.client, "GET", "/search/officers",
+        resp = await self._request("GET", "/search/officers",
                                         params={"q": f"{first} {last}", "items_per_page": 50})
         if resp.status_code == 404:
             return None
@@ -152,7 +171,7 @@ class CompaniesHouseClient:
             link = (item.get("links") or {}).get("self")
             if not link:
                 continue
-            appts = await request_with_retry(self.client, "GET", link, params={"items_per_page": 50})
+            appts = await self._request("GET", link, params={"items_per_page": 50})
             if appts.status_code != 200:
                 continue
             for a in appts.json().get("items", []):
@@ -166,7 +185,7 @@ class CompaniesHouseClient:
         return await self.profile(numbers.pop())
 
     async def decision_officers(self, number: str) -> list[Officer]:
-        resp = await request_with_retry(self.client, "GET", f"/company/{number}/officers", params={"items_per_page": 50})
+        resp = await self._request("GET", f"/company/{number}/officers", params={"items_per_page": 50})
         if resp.status_code == 404:
             return []
         resp.raise_for_status()

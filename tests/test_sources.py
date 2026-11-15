@@ -155,3 +155,12 @@ def test_first_party_hits_are_dated_by_the_api_and_quoted_from_the_record():
     nh = notice_hit(parse_release(RELEASE)[0], TODAY)
     nd = _signal_date(nh.link, bundle_with(nh), TODAY)
     assert nd.value == date(2026, 10, 30) and nd.source == DateSource.OFFICIAL_NOTICE
+
+
+def test_a_large_employer_board_is_not_a_candidate():
+    """Job 13 researched Databricks and GitLab for an agency client: they hire in-house."""
+    boards = {"acme": [posting()],
+              "bigco": [posting(slug="bigco", name="Big Co", title=f"Sales Executive {i}") for i in range(60)]}
+    serper = FakeSerper(["https://jobs.lever.co/acme", "https://jobs.lever.co/bigco"])
+    found, _ = collect(spec_with(), serper, FakeAts(boards))
+    assert [c.name_hint for c in found] == ["Acme Digital"]

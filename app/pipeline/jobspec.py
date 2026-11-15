@@ -33,6 +33,10 @@ class SeedSpec(BaseModel):
     source_urls: list[str] = Field(default_factory=list)
 
 
+# Hard ceiling on one job's spend, whatever is typed: a stray extra zero must not be spent.
+MAX_COST_CAP_INR = 5000.0
+
+
 class SourceSpec(BaseModel):
     """A structured public dataset in which every row is already a candidate buyer (a company hiring for a
     role, a supplier that just won a contract). Candidates found this way still pass every downstream check;
@@ -45,6 +49,9 @@ class SourceSpec(BaseModel):
     locations: list[str] = Field(default_factory=list)  # posting location must contain one as a whole word; empty = any
     min_roles: int = Field(default=1, ge=1)
     max_boards: int = Field(default=60, ge=1, le=300)
+    # A board with more open roles than this belongs to a large company (Databricks, GitLab), which hires
+    # in-house rather than buying from an agency. Raise it only when the ICP really is enterprise.
+    max_open_roles: int = Field(default=40, ge=1, le=10000)
     # contracts_awards: UK Contracts Finder award notices
     keywords: list[str] = Field(default_factory=list)  # any of these in the notice title/description
     cpv_prefixes: list[str] = Field(default_factory=list)  # e.g. "72" = IT services
@@ -81,12 +88,12 @@ class JobSpec(BaseModel):
     ask: str
     countries: list[str] = ["GB"]
     count: int = Field(gt=0, le=500)
-    freshness_days: int = 90
+    freshness_days: int = Field(default=90, ge=1, le=365)  # the jobs table enforces the same range
     personalized_email: bool = False
     # Opt-in tier: companies that fit the ICP (registry-active, high fit) but show no current dated signal.
     # Delivered on their own sheet, clearly labelled, only to fill up to `count` after signal leads.
     include_icp_only: bool = False
-    cost_cap_inr: float | None = None
+    cost_cap_inr: float | None = Field(default=None, gt=0, le=MAX_COST_CAP_INR)
     icp: dict
     playbook: Playbook
     suppress_domains: list[str] = Field(default_factory=list)

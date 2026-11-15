@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Sign in · LeadPro{% endblock %}
+{% block body %}
+<main class="auth">
+  <div>
+    <div class="brand"><span class="mark"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></span>LeadPro</div>
+    <form class="card" method="post" action="/signin">
+      <div class="card-body">
+        <h2>Sign in</h2>
+        <p class="muted small">This workspace holds personal data about named people, so it is private.</p>
+        {% if bad %}<div class="note note-bad" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><div>{{ 'Too many attempts. Wait 15 minutes and try again.' if throttled else 'That access key is not right.' }}</div></div>{% endif %}
+        <input type="hidden" name="next" value="{{ next or '/' }}">
+        <label class="field"><span class="lbl">Access key</span>
+          <input type="password" name="token" required autofocus autocomplete="current-password"></label>
+        <button type="submit" class="primary btn-lg btn-block">Continue</button>
+      </div>
+    </form>
+  </div>
+</main>
+{% endblock %}

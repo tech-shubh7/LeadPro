@@ -5,7 +5,6 @@ from datetime import date
 
 from pydantic import BaseModel, Field
 
-from app.config import get_settings
 from app.core.dates import within_window
 from app.pipeline.extract import Extraction
 from app.pipeline.jobspec import JobSpec
@@ -62,7 +61,7 @@ async def score(extraction: Extraction, spec: JobSpec, llm: OpenAIProvider, toda
                        "negative_signals": spec.playbook.negative}) + \
         f"\n\nCompany: {extraction.company_name} — {extraction.description}\n\nVerified evidence:\n{listing}"
     out = await llm.parse(
-        get_settings().llm_judge_model,
+        llm.judge_model,
         "You qualify B2B leads. Score only from the verified evidence listed; never assume facts that are not "
         "listed. If evidence is thin, score low. An event is not automatically a buying need: weigh each signal by "
         "its playbook strength and whether it plausibly creates a need for what the client sells (e.g. hiring "

@@ -1,5 +1,6 @@
 """Step 6: XLSX (Leads / Good leads - no verified contact / Methodology) + matching CSVs."""
 import csv
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -31,6 +32,25 @@ PERSON_COLUMNS = [
 DRAFT_COLUMNS = ["email_subject", "email_body"]
 ICP_SHEET = "ICP fit - no strong signal"
 NO_CONTACT_COLUMNS = COMPANY_COLUMNS + ["decision_makers_found_without_verified_email", "why_no_contact"]
+
+
+# Text a spreadsheet would run as a formula: '=HYPERLINK(...)', '+cmd|...', '@SUM(...)', or one led by a
+# tab/CR. Every value here comes from web pages we do not control (company names, quotes, drafted
+# emails), so any such cell is prefixed with an apostrophe, which Excel/Sheets/LibreOffice show as text.
+FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+_PHONE = re.compile(r"^\+\d{6,15}$")  # an E.164 number cannot execute; keep it readable
+
+
+def safe_cell(value):
+    if isinstance(value, str) and value.startswith(FORMULA_LEAD) and not _PHONE.match(value):
+        return "'" + value
+    return value
+
+
+def _safe_row(row: dict) -> dict:
+    return {k: safe_cell(v) for k, v in row.items()}
 
 
 @dataclass
@@ -134,7 +154,7 @@ def write_outputs(leads: list[LeadResult], spec: JobSpec, today: date, out_dir: 
         with path.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
             w.writeheader()
-            w.writerows(rows)
+            w.writerows(_safe_row(r) for r in rows)
     wb = Workbook()
     for title, cols, rows, _ in sheets:
         ws = wb.active if title == "Leads" else wb.create_sheet(title)
@@ -143,7 +163,7 @@ def write_outputs(leads: list[LeadResult], spec: JobSpec, today: date, out_dir: 
         for cell in ws[1]:
             cell.font = Font(bold=True)
         for r in rows:
-            ws.append([r.get(c, "") for c in cols])
+            ws.append([safe_cell(r.get(c, "")) for c in cols])
         ws.freeze_panes = "A2"
     ws = wb.create_sheet("Methodology")
     for line in (
@@ -165,6 +185,6 @@ def write_outputs(leads: list[LeadResult], spec: JobSpec, today: date, out_dir: 
         "company with exactly the brand name.",
         "outreach_allowed: UK = active company/LLP on Companies House (PECR corporate subscriber); other rules per country.",
     ):
-        ws.append([line])
+        ws.append([safe_cell(line)])
     wb.save(paths["xlsx"])
     return paths

@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 
 from app.config import get_settings
-from app.core.cost import CostCapExceeded, CostTracker
+from app.core.cost import CostCapExceeded, CostTracker, UsageLine
 from app.core.fetcher import Fetcher
 from app.core.normalize import normalize_domain
 from app.countries import get_pack
@@ -37,6 +37,8 @@ from app.pipeline.jobspec import JobSpec
 from app.pipeline.research import research
 from app.pipeline.score import fresh_signals, score
 from app.providers.email.generect import GenerectFinder
+from app.providers.llm.gemini_provider import GeminiProvider
+from app.providers.llm.openai_provider import LLMRefusal
 from app.providers.llm.manual_provider import ManualLLMProvider
 from app.providers.llm.openai_provider import OpenAIProvider
 from app.providers.registry.companies_house import CompaniesHouseClient, normalize_company_name
@@ -64,9 +66,29 @@ class Deps:
 class RunGuards:
     """Per-run exclusions checked inside each candidate, before any paid step."""
     suppressed_emails: frozenset[str] = frozenset()
-    # (registry, number) of companies already delivered to this client or already researched in this run:
-    # catches the same registered company reached through a second domain (acme.co.uk vs acme.com).
-    claimed_registry: set[tuple[str, str]] = field(default_factory=set)
+    # (registry, number) of companies already delivered to this client: never researched again under any domain.
+    delivered_registry: set[tuple[str, str]] = field(default_factory=set)
+    # (registry, number) -> outcome of the domain researching it in this run (True = it became a lead). Catches
+    # the same registered company reached through a second domain (acme.co.uk vs acme.com).
+    claims: dict[tuple[str, str], asyncio.Future] = field(default_factory=dict)
+
+
+async def claim_registry(guards: RunGuards, key: tuple[str, str]) -> asyncio.Future:
+    """One domain per registered company is researched at a time. A second domain waits for the first one's
+    outcome: if it became a lead, the second is a duplicate; if it was rejected (say, no dated signal on that
+    domain), the second takes over the claim instead of the company being lost. Returns the future the caller
+    must resolve (True = lead, False = rejected)."""
+    while True:
+        if key in guards.delivered_registry:
+            raise Rejected(f"duplicate company: {key[0]} {key[1]} already delivered to this client")
+        holder = guards.claims.get(key)
+        if holder is None or (holder.done() and not holder.result()):
+            mine = asyncio.get_running_loop().create_future()
+            guards.claims[key] = mine  # no await since the check: safe under asyncio
+            return mine
+        if holder.done():
+            raise Rejected(f"duplicate company: {key[0]} {key[1]} already researched in this run under another domain")
+        await asyncio.shield(holder)
 
 
 @dataclass
@@ -81,16 +103,17 @@ class RunSummary:
     outputs: dict = field(default_factory=dict)
 
 
-LLM_MODES = ("openai", "manual")
+LLM_MODES = ("openai", "gemini", "manual")
 
 
 def default_deps(cost: CostTracker, countries: list[str], llm_mode: str | None = None) -> Deps:
-    """llm_mode 'openai' calls the API; 'manual' writes each LLM step to work/llm_tasks for an operator
-    (or Claude Code) to answer. Everything after the LLM (quote checks, dates, gates) is identical."""
+    """'openai' and 'gemini' call their APIs; 'manual' writes each LLM step to work/llm_tasks for an
+    operator (or Claude Code) to answer. Everything after the LLM (quote checks, dates, gates) is
+    identical, so the mode changes who writes the JSON, never what is trusted."""
     mode = llm_mode or get_settings().llm_mode
     if mode not in LLM_MODES:
         raise ValueError(f"llm mode must be one of {LLM_MODES}, got {mode!r}")
-    llm = ManualLLMProvider(cost) if mode == "manual" else OpenAIProvider(cost)
+    llm = {"manual": ManualLLMProvider, "gemini": GeminiProvider, "openai": OpenAIProvider}[mode](cost)
     return Deps(SerperClient(cost), llm, Fetcher(), [GenerectFinder(cost)],
                 CompaniesHouseClient() if "GB" in countries else None)
 
@@ -142,12 +165,23 @@ async def process_candidate(c: Candidate, spec: JobSpec, deps: Deps, today: date
         raise Rejected(f"website prints company number {', '.join(bundle.company_numbers)}, "
                        f"not the notice supplier's {c.registry_id}")
     record, registry_match = await _registry_record(deps, pack, bundle, ext.company_name, ext.people, c.registry_id)
+    claim = None
     if record and registry_match in (REGISTRY_MATCH_NUMBER, REGISTRY_MATCH_SOURCE):
-        key = (record.registry, record.registry_id)
-        if key in guards.claimed_registry:  # check-and-claim has no await between: safe under asyncio
-            raise Rejected(f"duplicate company: {record.registry} {record.registry_id} already delivered to this "
-                           "client or researched in this run under another domain")
-        guards.claimed_registry.add(key)
+        claim = await claim_registry(guards, (record.registry, record.registry_id))
+    try:
+        lead = await _qualify(c, spec, deps, today, lead_id, guards, pack, bundle, ext, record, registry_match)
+    except BaseException:
+        if claim is not None and not claim.done():
+            claim.set_result(False)  # a waiting duplicate domain may still qualify the company
+        raise
+    if claim is not None and not claim.done():
+        claim.set_result(True)
+    return lead
+
+
+async def _qualify(c: Candidate, spec: JobSpec, deps: Deps, today: date, lead_id: str, guards: RunGuards, pack,
+                   bundle, ext, record, registry_match) -> LeadResult:
+    settings = get_settings()
     if record and record.status != "active":
         raise Rejected(f"registry status '{record.status}' ({record.registry} {record.registry_id})")
     proofs = {AliveProof.WEBSITE_LIVE if bundle.website_live else AliveProof.WEBSITE_EXISTS}
@@ -197,7 +231,9 @@ async def process_candidate(c: Candidate, spec: JobSpec, deps: Deps, today: date
 
 
 async def run_job(spec: JobSpec, out_dir: Path, deps: Deps | None = None, today: date | None = None,
-                  llm_mode: str | None = None) -> RunSummary:
+                  llm_mode: str | None = None, job_id: int | None = None) -> RunSummary:
+    """Runs `spec` end to end. `job_id` adopts a row that already exists (the console creates one at
+    intake so the plan can be reviewed before anything is spent); without it a new row is inserted."""
     settings = get_settings()
     today = today or date.today()
     cost = CostTracker(spec.cost_cap_inr or settings.max_cost_per_job_inr)
@@ -205,12 +241,26 @@ async def run_job(spec: JobSpec, out_dir: Path, deps: Deps | None = None, today:
     country = spec.countries[0]
 
     with session_scope() as s:
-        job = Job(client_key=spec.client.key, client_name=spec.client.name, client_website=spec.client.website,
-                  ask=spec.ask, target_countries=spec.countries, requested_count=spec.count,
-                  freshness_days=spec.freshness_days, personalized_email=spec.personalized_email,
-                  icp={"icp": spec.icp, "playbook": spec.playbook.model_dump()}, suppressed_domains=spec.suppress_domains,
-                  status=JobStatus.DISCOVERING, cost_cap_inr=cost.cap_inr)
-        s.add(job)
+        fields = dict(
+            client_key=spec.client.key, client_name=spec.client.name, client_website=spec.client.website,
+            ask=spec.ask, target_countries=spec.countries, requested_count=spec.count,
+            freshness_days=spec.freshness_days, personalized_email=spec.personalized_email,
+            suppressed_domains=spec.suppress_domains, status=JobStatus.DISCOVERING, cost_cap_inr=cost.cap_inr,
+            error=None, finished_at=None,
+        )
+        job = s.get(Job, job_id) if job_id is not None else None
+        if job is None:
+            job = Job(icp={"icp": spec.icp, "playbook": spec.playbook.model_dump()}, **fields)
+            s.add(job)
+        else:
+            # Spend already on this job (drafting the plan from the client's site) is part of its cost and
+            # counts against the same cap; a fresh tracker would silently drop it from the total.
+            if job.cost_lines and not cost.lines:
+                cost.lines.extend(UsageLine(**line) for line in job.cost_lines)
+            for key, value in fields.items():
+                setattr(job, key, value)
+            # Keep whatever the intake stored alongside the ICP (the client summary, sender points).
+            job.icp = (job.icp or {}) | {"icp": spec.icp, "playbook": spec.playbook.model_dump()}
         s.flush()
         job_id = job.id
         exclude = (store.delivered_domains(s, spec.client.key) | store.suppressed_domains(s)
@@ -230,10 +280,13 @@ async def run_job(spec: JobSpec, out_dir: Path, deps: Deps | None = None, today:
             candidates = await discover(spec, deps.serper, deps.llm, exclude,
                                         math.ceil(spec.count * settings.overfetch_factor), stats_out=query_stats,
                                         today=today)
-        except CostCapExceeded as exc:
+        except (CostCapExceeded, LLMRefusal) as exc:
+            # The cap, or the model provider having a bad minute. Neither is a reason to throw away the
+            # companies discovery already resolved: research them and report the shortfall honestly.
             summary.status = JobStatus.DONE_WITH_SHORTFALL
-            log.warning("cost cap reached during discovery: %s", exc)
-        _set_status(job_id, JobStatus.RESEARCHING, {"candidates": len(candidates)})
+            candidates = list(getattr(exc, "candidates", []))
+            log.warning("discovery stopped early (%d candidates kept): %s", len(candidates), exc)
+        await asyncio.to_thread(_set_status, job_id, JobStatus.RESEARCHING, {"candidates": len(candidates)}, cost)
         sem = asyncio.Semaphore(settings.research_concurrency)
 
         async def worker(i: int, c: Candidate) -> None:
@@ -243,10 +296,10 @@ async def run_job(spec: JobSpec, out_dir: Path, deps: Deps | None = None, today:
                 try:
                     lead = await process_candidate(c, spec, deps, today, f"L{job_id}-{i:03d}", guards)
                     # Persisted immediately: durable before any later crash, not batched to job end.
-                    with session_scope() as s:
-                        lead.contact_ids = store.save_lead(s, s.get(Job, job_id), lead, country)
+                    # Sync DB I/O runs off the event loop so other workers' fetches keep moving.
+                    lead.contact_ids = await asyncio.to_thread(_persist_lead, job_id, lead, country)
                 except Rejected as r:
-                    _reject(job_id, c.domain, country, str(r), summary, r.score)
+                    await _reject(job_id, c.domain, country, str(r), summary, r.score)
                     return
                 except CostCapExceeded as exc:
                     stop.set()
@@ -255,11 +308,15 @@ async def run_job(spec: JobSpec, out_dir: Path, deps: Deps | None = None, today:
                     return
                 except Exception as exc:  # one bad site must not kill the job
                     log.exception("candidate %s failed", c.domain)
-                    _reject(job_id, c.domain, country, f"error: {type(exc).__name__}: {exc}", summary)
+                    await _reject(job_id, c.domain, country, f"error: {type(exc).__name__}: {exc}", summary)
                     return
+                finally:
+                    # The console shows spend live; without this it sat at the drafting cost for the whole run.
+                    await asyncio.to_thread(_save_cost, job_id, cost)
                 leads.append(lead)
-                # Signal leads and (opt-in) ICP-only leads both fill `count`; signal leads are delivered first.
-                if sum(1 for l in leads if l.verified_people) >= spec.count:
+                # Stop once enough SIGNAL leads have a verified contact. ICP-only leads only fill the gap left
+                # when candidates run out; counting them here would end the search for signal leads early.
+                if sum(1 for l in leads if l.verified_people and l.tier == LeadTier.SIGNAL) >= spec.count:
                     stop.set()
 
         await asyncio.gather(*(worker(i, c) for i, c in enumerate(candidates, 1)))
@@ -274,8 +331,8 @@ async def run_job(spec: JobSpec, out_dir: Path, deps: Deps | None = None, today:
             _finalize(job_id, spec, leads, candidates, query_stats, cost, summary, error, today, out_dir)
         except Exception:
             log.exception("job %s: could not record the failure state either", job_id)
-
-    await _close(deps)
+    finally:  # clients are closed even on cancellation (Ctrl-C), not only on a normal or failed finish
+        await _close(deps)
     return summary
 
 
@@ -286,9 +343,13 @@ def _finalize(job_id: int, spec: JobSpec, leads: list[LeadResult], candidates: l
     normal finish and, with `error` set, again from the failure path to salvage whatever was already
     computed and persisted before the crash."""
     by_score = lambda l: -l.score.total
-    qualified = sorted((l for l in leads if l.verified_people and l.tier == LeadTier.SIGNAL), key=by_score)[: spec.count]
-    icp_only = sorted((l for l in leads if l.verified_people and l.tier == LeadTier.ICP_ONLY),
-                      key=by_score)[: max(0, spec.count - len(qualified))]  # only fills the gap
+    # Every signal lead found is delivered, even past the target: workers already in flight when the
+    # target was reached finish their leads, those were paid for, and holding them back left them stored
+    # as 'qualified' but never delivered, so the console counted leads the spreadsheet did not have.
+    qualified = sorted((l for l in leads if l.verified_people and l.tier == LeadTier.SIGNAL), key=by_score)
+    icp_ranked = sorted((l for l in leads if l.verified_people and l.tier == LeadTier.ICP_ONLY), key=by_score)
+    gap = max(0, spec.count - len(qualified))
+    icp_only, icp_unneeded = icp_ranked[:gap], icp_ranked[gap:]  # ICP-only leads only fill the gap
     no_contact = [l for l in leads if not l.verified_people]
     deliver = qualified + icp_only + no_contact
     if summary.status == JobStatus.DONE and len(qualified) + len(icp_only) < spec.count:
@@ -296,6 +357,12 @@ def _finalize(job_id: int, spec: JobSpec, leads: list[LeadResult], candidates: l
     with session_scope() as s:
         job = s.get(Job, job_id)
         store.record_deliveries(s, job, [(lead, lead.contact_ids) for lead in deliver])
+        if icp_unneeded:  # stored as leads but not delivered: record them as such, so every count agrees
+            reason = "ICP-only, not needed: signal leads met the target"
+            store.mark_not_delivered(s, job_id, [lead.company_id for lead in icp_unneeded], reason)
+            summary.rejected[reason] = summary.rejected.get(reason, 0) + len(icp_unneeded)
+        for tier_leads in (qualified, icp_only):  # each sheet ranks from 1, as the export does
+            store.set_ranks(s, job_id, [lead.company_id for lead in tier_leads])
         job.status = summary.status
         job.error = error
         job.cost_inr = round(cost.spent_inr, 2)
@@ -317,16 +384,41 @@ async def _close(deps: Deps) -> None:
             await client.aclose()
 
 
-def _set_status(job_id: int, status: JobStatus, progress: dict) -> None:
+def _persist_lead(job_id: int, lead: LeadResult, country: str) -> dict:
+    with session_scope() as s:
+        return store.save_lead(s, s.get(Job, job_id), lead, country)
+
+
+def _set_status(job_id: int, status: JobStatus, progress: dict, cost: CostTracker | None = None) -> None:
     with session_scope() as s:
         job = s.get(Job, job_id)
         job.status, job.progress = status, progress
+        if cost is not None:
+            job.cost_inr = round(cost.spent_inr, 2)
 
 
-def _reject(job_id: int, domain: str, country: str, reason: str, summary: RunSummary, score=None) -> None:
+def _save_cost(job_id: int, cost: CostTracker) -> None:
+    try:
+        with session_scope() as s:
+            if job := s.get(Job, job_id):
+                job.cost_inr = round(cost.spent_inr, 2)
+    except Exception:  # a display value: never worth failing a lead over
+        log.exception("could not record running cost for job %s", job_id)
+
+
+def _save_rejection(job_id: int, domain: str, country: str, reason: str, score) -> None:
+    with session_scope() as s:
+        store.save_rejection(s, s.get(Job, job_id), domain, country, reason, score)
+
+
+async def _reject(job_id: int, domain: str, country: str, reason: str, summary: RunSummary, score=None) -> None:
     key = reason.split(":")[0].split(" (")[0][:60]
     if key.startswith("score "):
         key = "score below threshold"
     summary.rejected[key] = summary.rejected.get(key, 0) + 1
-    with session_scope() as s:
-        store.save_rejection(s, s.get(Job, job_id), domain, country, reason, score)
+    if not domain:
+        return  # never resolved to a website: nothing to key a company record on
+    try:
+        await asyncio.to_thread(_save_rejection, job_id, domain, country, reason, score)
+    except Exception:  # the audit row is best-effort; failing to write it must not fail the whole job
+        log.exception("could not record rejection of %s", domain)

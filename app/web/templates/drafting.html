@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Drafting the plan · LeadPro{% endblock %}
+{% block content %}
+<div class="narrow">
+{{ m.steps(2) }}
+
+<div class="card" id="drafting" data-job="{{ job.id }}">
+  <div class="card-body empty">
+    <div class="art"><span class="spinner lg" aria-hidden="true"></span></div>
+    <h2>Reading {{ job.client_website | host }}</h2>
+    <p class="dim">Working out what {{ job.client_name }} sells and who buys it, then drafting the buying signals
+      worth searching for. Usually 10–40 seconds.</p>
+    <p class="muted small" aria-live="polite"><span data-elapsed>0s</span> elapsed · this page moves on by itself</p>
+    <noscript><p><a class="btn" href="/new/{{ job.id }}">Check again</a></p></noscript>
+  </div>
+  <div class="card-foot">
+    <ul class="checklist">
+      <li class="done"><span class="bub">{{ m.icon('check') }}</span>Ask received: “{{ job.ask | trunc(80) }}”</li>
+      <li class="now"><span class="bub">{{ m.icon('check') }}</span>Reading the client's own pages</li>
+      <li><span class="bub">{{ m.icon('check') }}</span>Drafting the plan for you to approve — nothing is spent on research until you do</li>
+    </ul>
+  </div>
+</div>
+</div>
+{% endblock %}

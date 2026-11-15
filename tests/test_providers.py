@@ -58,7 +58,7 @@ def test_name_match_fails_closed_when_ambiguous():
         {"title": "ACME LTD", "company_number": "01111111", "company_status": "active"},
         {"title": "Acme Limited", "company_number": "02222222", "company_status": "active"},
     ]})
-    ch = CompaniesHouseClient(client=httpx.AsyncClient(base_url="https://api.company-information.service.gov.uk"))
+    ch = CompaniesHouseClient(client=httpx.AsyncClient(base_url="https://api.company-information.service.gov.uk"), min_interval_s=0)
     assert asyncio.run(ch.match_by_name("Acme")) is None
 
 
@@ -67,7 +67,7 @@ def test_name_match_ignores_dissolved_namesake():
     respx.get("https://api.company-information.service.gov.uk/search/companies").respond(200, json={"items": [
         {"title": "ALP LIMITED", "company_number": "01701876", "company_status": "dissolved"},
     ]})
-    ch = CompaniesHouseClient(client=httpx.AsyncClient(base_url="https://api.company-information.service.gov.uk"))
+    ch = CompaniesHouseClient(client=httpx.AsyncClient(base_url="https://api.company-information.service.gov.uk"), min_interval_s=0)
     assert asyncio.run(ch.match_by_name("ALP")) is None
 
 
@@ -97,6 +97,9 @@ def test_news_results_never_become_candidates_directly():
             return [SearchHit("x", "https://brandnews.example.co.uk/story", "About Acme", None, "news", q)]
 
     class LLM:
+        extract_model = "fake-extract"
+        judge_model = "fake-judge"
+
         async def parse(self, model, instructions, data, schema, **k):
             from app.pipeline.discover import HitTriage, QueryPlanOut, TriageOut
             if schema is QueryPlanOut:
@@ -107,3 +110,22 @@ def test_news_results_never_become_candidates_directly():
     spec = JobSpec.model_validate({"client": {"key": "k", "name": "n"}, "ask": "a", "count": 1, "icp": {},
         "playbook": {"signals": [{"type": "t", "description": "d", "queries": ["q"], "kind": "news"}], "buyer_titles": ["CEO"]}})
     assert asyncio.run(discover(spec, Serper(), LLM(), set(), 5)) == []
+
+
+def test_openai_provider_prices_an_unlisted_model_instead_of_crashing():
+    """It indexed the price table directly: any model missing from it raised KeyError on every call."""
+    from types import SimpleNamespace
+
+    from app.core.cost import CostTracker
+    from app.providers.llm.openai_provider import OpenAIProvider
+
+    usage = SimpleNamespace(input_tokens=1000, output_tokens=100, input_tokens_details=None)
+    provider = OpenAIProvider(CostTracker(cap_inr=10), client=object())
+    assert provider._price_inr("some-new-model", usage) > 0
+
+
+def test_wildcard_site_operators_are_rewritten_to_ones_google_supports():
+    from app.providers.search.serper import clean_query
+    assert clean_query('site:*.co.uk "request for proposal"') == 'site:co.uk "request for proposal"'
+    assert clean_query('site:*.co.uk/careers OR SITE:*.org.uk x') == 'site:co.uk/careers OR site:org.uk x'
+    assert clean_query('site:acme.co.uk news') == 'site:acme.co.uk news'

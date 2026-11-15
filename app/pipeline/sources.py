@@ -9,8 +9,11 @@ Nothing here is trusted beyond "this company is worth researching": the website,
 match, scoring and verified email all run afterwards exactly as for any other candidate.
 """
 import asyncio
+import logging
 import re
 from datetime import date, timedelta
+
+import httpx
 
 from app.core.dates import within_window
 from app.pipeline.jobspec import JobSpec, SourceSpec
@@ -18,6 +21,7 @@ from app.providers.jobs.ats import AtsClient, JobPosting, parse_board_url
 from app.providers.search.serper import SearchHit, SerperClient
 from app.providers.tenders.contracts_finder import Award, ContractsFinderClient
 
+log = logging.getLogger("leadpro")
 MAX_HITS_PER_COMPANY = 3
 # Kinds of SearchHit whose text and date come straight from a first-party API response fetched in this run.
 FIRST_PARTY_KINDS = frozenset({"ats", "notice"})
@@ -59,6 +63,8 @@ async def _ats_candidates(src: SourceSpec, spec: JobSpec, serper: SerperClient, 
     # All boards are fetched together; AtsClient's semaphore is what limits how many run at once.
     fetched = await asyncio.gather(*(ats.postings(platform, slug) for platform, slug in chosen))
     for postings in fetched:
+        if len(postings) > src.max_open_roles:
+            continue  # a large employer: hires in-house, not a buyer of outside delivery
         matching = [p for p in postings
                     if within_window(p.posted_on, today, spec.freshness_days) and role.search(p.title)
                     and (where is None or where.search(p.location))]
@@ -107,10 +113,15 @@ async def collect_sources(spec: JobSpec, serper: SerperClient, clients: dict | N
     candidates, spent = [], 0
     try:
         for src in spec.sources:
-            if src.type == "ats_jobs":
-                found, used = await _ats_candidates(src, spec, serper, ats, gl, today, budget - spent)
-            else:
-                found, used = await _award_candidates(src, cf, today)
+            try:
+                if src.type == "ats_jobs":
+                    found, used = await _ats_candidates(src, spec, serper, ats, gl, today, budget - spent)
+                else:
+                    found, used = await _award_candidates(src, cf, today)
+            except (httpx.HTTPError, ValueError) as exc:
+                # A public dataset being down (or returning junk) loses that source only, not the whole job.
+                log.warning("source %s failed, skipped: %s: %s", src.type, type(exc).__name__, exc)
+                continue
             candidates += found
             spent += used
     finally:

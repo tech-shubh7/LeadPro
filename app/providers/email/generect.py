@@ -43,20 +43,20 @@ class GenerectFinder:
         return usd * self.settings.usd_to_inr
 
     async def find(self, first_name: str, last_name: str, domain: str) -> EmailResult:
-        self.cost.ensure_budget(self._inr(self.settings.generect_usd_per_found_email))
-        resp = await request_with_retry(
-            self.client, "POST", "/api/v1/email/find/",
-            json={"first_name": first_name, "last_name": last_name, "domain": domain},
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        data = body.get("data") or {}
-        email = data.get("valid_email")
-        charged = (body.get("meta") or {}).get("amount_charged")
-        if charged is None:  # fall back to list price: billed only when an email is found
-            charged = self.settings.generect_usd_per_found_email if email else 0.0
-        if charged:
-            self.cost.record("generect", "find", 1, self._inr(float(charged)))
+        with self.cost.reserve(self._inr(self.settings.generect_usd_per_found_email)):
+            resp = await request_with_retry(
+                self.client, "POST", "/api/v1/email/find/",
+                json={"first_name": first_name, "last_name": last_name, "domain": domain},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            data = body.get("data") or {}
+            email = data.get("valid_email")
+            charged = (body.get("meta") or {}).get("amount_charged")
+            if charged is None:  # fall back to list price: billed only when an email is found
+                charged = self.settings.generect_usd_per_found_email if email else 0.0
+            if charged:
+                self.cost.record("generect", "find", 1, self._inr(float(charged)))
         verdict = to_verdict(data.get("result"), data.get("catch_all")) if email else EmailVerdict.UNKNOWN
         return EmailResult(email.lower() if email else None, verdict, self.name, str(data.get("result")))
 
@@ -64,13 +64,14 @@ class GenerectFinder:
         if not emails:
             return []
         price = self._inr(self.settings.generect_usd_per_validation * len(emails))
-        self.cost.ensure_budget(price)
-        resp = await request_with_retry(self.client, "POST", "/api/v1/email/validate/", json={"emails": emails})
-        resp.raise_for_status()
-        charged = (resp.json().get("meta") or {}).get("amount_charged")
-        self.cost.record("generect", "validate", len(emails), self._inr(float(charged)) if charged is not None else price)
+        with self.cost.reserve(price):
+            resp = await request_with_retry(self.client, "POST", "/api/v1/email/validate/", json={"emails": emails})
+            resp.raise_for_status()
+            body = resp.json()
+            charged = (body.get("meta") or {}).get("amount_charged")
+            self.cost.record("generect", "validate", len(emails), self._inr(float(charged)) if charged is not None else price)
         return [
             EmailResult(item.get("email", "").lower(), to_verdict(item.get("result"), item.get("catch_all")),
                         self.name, str(item.get("result")))
-            for item in resp.json().get("data", [])
+            for item in body.get("data", [])
         ]

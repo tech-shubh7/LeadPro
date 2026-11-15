@@ -262,6 +262,9 @@ def test_job_boards_never_pass_for_a_company_website():
     for d in ("glassdoor.be", "uk.indeed.com", "ziprecruiter.com", "jobs.ashbyhq.com", "remoteok.com"):
         assert is_third_party(d), d
     assert not is_third_party("greenhousecafe.co.uk")  # whole labels only
+    for d in ("gamesjobs.co.uk", "cwjobs.co.uk", "imdb.com"):  # job 16 researched these as buyers
+        assert is_third_party(d), d
+    assert not is_third_party("acmejobsolutions.co.uk")
 
     class Serper:
         async def query(self, q, **k):

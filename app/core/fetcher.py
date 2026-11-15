@@ -8,7 +8,7 @@ import hashlib
 import json
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
@@ -24,6 +24,11 @@ USER_AGENT = "LeadProResearchBot/0.1 (B2B research; respects robots.txt)"
 MIN_HOST_INTERVAL_S = 1.0
 MAX_PAGE_BYTES = 5_000_000
 MIN_GOOD_TEXT_CHARS = 400
+# Documents: RFPs and tender briefs are mostly published as PDFs, and they are the strongest buying signal
+# there is ("we invite proposals for..."). Read as text, with limits, so their quotes can be verified.
+MAX_PDF_BYTES = 15_000_000
+MAX_PDF_PAGES = 40
+EARLIEST_DOC_DATE = date(1995, 1, 1)
 
 
 @dataclass
@@ -36,6 +41,8 @@ class FetchResult:
     fetched_at: str  # ISO timestamp
     from_cache: bool = False
     blocked_reason: str | None = None
+    doc_date: str | None = None  # ISO creation date embedded in a fetched document (PDF); None for web pages
+    is_document: bool = False
 
     @property
     def ok(self) -> bool:
@@ -63,6 +70,59 @@ def extract_main_text(page_html: str) -> str:
     if len(recall) >= MIN_GOOD_TEXT_CHARS:
         return recall
     return max((text, recall, visible_text(page_html)), key=len)
+
+
+def _looks_like_pdf(content_type: str, url: str) -> bool:
+    ctype = content_type.split(";")[0].strip().lower()
+    return ctype == "application/pdf" or (
+        ctype in ("application/octet-stream", "binary/octet-stream", "")
+        and urlparse(url).path.lower().endswith(".pdf"))
+
+
+def _pdf_date(value, today: date) -> str | None:
+    """A document date we are willing to stand behind: present, parseable, not in the future, not absurd."""
+    if not isinstance(value, datetime):
+        return None
+    d = value.date()
+    return d.isoformat() if EARLIEST_DOC_DATE <= d <= today else None
+
+
+def pdf_text_and_date(data: bytes) -> tuple[str, str | None]:
+    """(text of the first MAX_PDF_PAGES pages, creation date or None). Encrypted, broken or image-only PDFs
+    give no text, which simply means nothing in them can be quoted."""
+    import io
+
+    from pypdf import PdfReader
+    from pypdf.errors import PdfReadError
+
+    try:
+        reader = PdfReader(io.BytesIO(data), strict=False)
+        if reader.is_encrypted:
+            try:
+                reader.decrypt("")  # many published PDFs are 'encrypted' with an empty owner password
+            except Exception:
+                return "", None
+        parts = []
+        for page in reader.pages[:MAX_PDF_PAGES]:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:  # one malformed page must not lose the rest
+                continue
+        meta = None
+        try:
+            meta = reader.metadata
+        except Exception:
+            pass
+        created = None
+        if meta is not None:
+            try:
+                created = meta.creation_date
+            except Exception:
+                created = None
+    except (PdfReadError, ValueError, TypeError, KeyError, OSError, RecursionError):
+        return "", None
+    text = " ".join(" ".join(parts).split())
+    return text, _pdf_date(created, datetime.now(UTC).date())
 
 
 class PageCache:
@@ -158,20 +218,32 @@ class Fetcher:
         try:
             async with self.client.stream("GET", url) as resp:
                 final_url = str(resp.url)
-                is_html = "html" in resp.headers.get("content-type", "")
+                ctype = resp.headers.get("content-type", "")
+                is_html = "html" in ctype
+                is_pdf = not is_html and _looks_like_pdf(ctype, final_url)
+                limit = MAX_PDF_BYTES if is_pdf else MAX_PAGE_BYTES
                 declared = resp.headers.get("content-length", "")
-                if declared.isdigit() and int(declared) > MAX_PAGE_BYTES:
+                if declared.isdigit() and int(declared) > limit:
                     return FetchResult(url, final_url, resp.status_code, "", "", now, blocked_reason="page too large")
-                if not is_html:  # PDFs, images, video: never read, so never downloaded
+                if not (is_html or is_pdf):  # images, video, archives: never read, so never downloaded
                     return FetchResult(url, final_url, resp.status_code, "", "", now)
                 body = bytearray()
                 async for chunk in resp.aiter_bytes():
                     body += chunk
-                    if len(body) > MAX_PAGE_BYTES:  # no or false Content-Length: stop reading, don't buffer it all
+                    if len(body) > limit:  # no or false Content-Length: stop reading, don't buffer it all
                         return FetchResult(url, final_url, resp.status_code, "", "", now, blocked_reason="page too large")
                 encoding = resp.charset_encoding or "utf-8"
+                status = resp.status_code
         except httpx.HTTPError as exc:
             return FetchResult(url, url, 0, "", "", now, blocked_reason=f"fetch error: {type(exc).__name__}")
+        if is_pdf:
+            # Parsing is CPU-bound and PDFs can be large: off the event loop, like HTML text extraction.
+            text, doc_date = await asyncio.to_thread(pdf_text_and_date, bytes(body))
+            result = FetchResult(url, final_url, status, "", text, now, doc_date=doc_date, is_document=True,
+                                 blocked_reason=None if text else "document has no readable text")
+            if result.ok:
+                self.cache.put(result)
+            return result
         try:
             page_html = bytes(body).decode(encoding, errors="replace")
         except LookupError:  # a charset name Python doesn't know (e.g. 'utf8mb4')

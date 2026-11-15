@@ -104,7 +104,8 @@ def initials(value) -> str:
 
 DATE_SOURCES = {"search_result": "search result date", "job_posting": "job posting date",
                 "article_meta": "Article meta tags", "json_ld": "structured data (JSON-LD)",
-                "url_path": "date in the URL", "html_markup": "page markup", "official_notice": "official notice"}
+                "url_path": "date in the URL", "html_markup": "page markup", "official_notice": "official notice",
+                "document_meta": "the document's own creation date (PDF)"}
 
 
 def date_source(value) -> str:

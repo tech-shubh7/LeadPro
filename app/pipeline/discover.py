@@ -59,7 +59,10 @@ THIRD_PARTY_BRANDS = frozenset({
     "recruitee", "teamtailor", "personio", "bamboohr", "jobvite", "icims", "myworkdayjobs", "workable",
     "breezy", "remoteok", "weworkremotely", "nodesk", "remotive", "wellfound", "himalayas", "workingnomads",
     "builtin", "otta", "crunchbase", "trustpilot", "wikipedia", "facebook", "instagram", "youtube", "tiktok",
+    "imdb",
 })
+# Job boards nearly always carry "jobs" in their name (gamesjobs, cwjobs, justlondonjobs, jobsite).
+_JOB_BOARD_LABEL = re.compile(r"^(?:jobs?[a-z0-9-]*|[a-z0-9-]*jobs)$")
 # A search title like "Temporal jobs - ZipRecruiter" names the company but the page is a listing about it.
 LISTING_WORDS = re.compile(r"\b(jobs?|careers? at|hiring|vacanc(?:y|ies)|salar(?:y|ies)|reviews?|job openings)\b", re.I)
 
@@ -67,7 +70,8 @@ LISTING_WORDS = re.compile(r"\b(jobs?|careers? at|hiring|vacanc(?:y|ies)|salar(?
 def is_third_party(domain: str) -> bool:
     if domain in THIRD_PARTY_DOMAINS or domain.endswith((".gov.uk", ".ac.uk", ".nhs.uk", ".police.uk")):
         return True
-    return any(label in THIRD_PARTY_BRANDS for label in domain.split(".")[:-1])
+    labels = domain.split(".")[:-1]
+    return any(label in THIRD_PARTY_BRANDS or _JOB_BOARD_LABEL.match(label) for label in labels)
 
 
 @dataclass
@@ -126,6 +130,12 @@ def _distinctive_token(name: str) -> str | None:
     stop = {"the", "and", "ltd", "limited", "plc", "llp", "group", "uk", "co", "company", "of", "brand", "brands"}
     tokens = [t for t in re.findall(r"[a-z0-9]+", name.lower()) if t not in stop and len(t) >= 3]
     return max(tokens, key=len) if tokens else None
+
+
+def _domain_names(link: str, company_name: str) -> bool:
+    domain = normalize_domain(link)
+    token = _distinctive_token(company_name)
+    return bool(domain and token and not is_third_party(domain) and token in domain.replace("-", ""))
 
 
 async def resolve_domain(serper: SerperClient, name: str, gl: str, category: str | None = None) -> str | None:
@@ -198,9 +208,12 @@ async def triage(spec: JobSpec, llm: OpenAIProvider, hits: list[SearchHit]) -> l
         if not (0 <= t.hit_index < len(hits)):
             continue
         hit = hits[t.hit_index]
-        # The company name must literally appear in the result (no invented companies).
+        # The company name must literally appear in the result (no invented companies), or be corroborated by
+        # the result's own domain: an RFP PDF on brightwave.co.uk is Brightwave's even if its search snippet
+        # never repeats the name. A third-party host corroborates nothing.
         if t.company_name and t.company_name.lower() not in f"{hit.title} {hit.snippet}".lower():
-            t.company_name = None
+            if not _domain_names(hit.link, t.company_name):
+                t.company_name = None
         valid.append(t)
     return valid
 

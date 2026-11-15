@@ -44,6 +44,7 @@ class DateSource(StrEnum):
     URL_PATH = "url_path"
     HTML_MARKUP = "html_markup"  # htmldate, markup only (time/meta tags), article pages only
     OFFICIAL_NOTICE = "official_notice"  # publication date in a government open-data record (e.g. Contracts Finder)
+    DOCUMENT_META = "document_meta"  # creation date embedded in a published document (PDF RFP / tender brief)
 
 
 class DatePrecision(StrEnum):

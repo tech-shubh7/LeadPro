@@ -90,3 +90,53 @@ def test_a_model_that_failed_over_is_skipped_for_a_while(monkeypatch):
     models.calls.clear()
     out = asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out))
     assert out.answer == "gemini-3.7-flash" and models.calls == ["gemini-3.7-flash"]  # no retries re-paid
+
+
+def _invalid(model):
+    return genai_errors.APIError(400, {"error": {"code": 400, "message": "Request contains an invalid argument.",
+                                                 "status": "INVALID_ARGUMENT"}})
+
+
+def test_a_model_that_cannot_disable_thinking_is_asked_again_with_its_default(monkeypatch):
+    """Job 16: gemini-3.5-flash-lite rejects thinking_budget=0 with 400; 7 of 8 companies were lost."""
+    provider, models = _provider(busy={"gemini-3.8-flash"})
+    monkeypatch.setattr(provider.settings, "gemini_fallback_models", ["gemini-3.5-flash-lite"])
+    monkeypatch.setattr(gp, "_MUST_THINK", set())
+    real = models.generate_content
+
+    async def lite_needs_thinking(model, contents, config):
+        thinking = config.thinking_config
+        if model == "gemini-3.5-flash-lite" and thinking is not None and thinking.thinking_budget == 0:
+            models.calls.append(model)
+            raise _invalid(model)
+        return await real(model, contents, config)
+
+    models.generate_content = lite_needs_thinking
+    out = asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out, effort="low"))
+    assert out.answer == "gemini-3.5-flash-lite" and "gemini-3.5-flash-lite" in gp._MUST_THINK
+
+
+def test_a_fallback_that_refuses_the_request_hands_on_to_the_next(monkeypatch):
+    provider, models = _provider(busy={"gemini-3.8-flash"})
+    monkeypatch.setattr(provider.settings, "gemini_fallback_models", ["gemini-x-broken", "gemini-3.6-flash"])
+    real = models.generate_content
+
+    async def broken(model, contents, config):
+        if model == "gemini-x-broken":
+            raise genai_errors.APIError(400, {"error": {"code": 400, "message": "bad", "status": "FAILED_PRECONDITION"}})
+        return await real(model, contents, config)
+
+    models.generate_content = broken
+    out = asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out, effort="medium"))
+    assert out.answer == "gemini-3.6-flash"
+
+
+def test_the_primary_model_refusing_the_request_still_fails_loudly(monkeypatch):
+    provider, models = _provider(busy=set())
+
+    async def bad(model, contents, config):
+        raise genai_errors.APIError(400, {"error": {"code": 400, "message": "bad", "status": "FAILED_PRECONDITION"}})
+
+    models.generate_content = bad
+    with pytest.raises(LLMRefusal):
+        asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out, effort="medium"))

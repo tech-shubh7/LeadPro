@@ -80,7 +80,8 @@ def test_ats_filters_role_location_and_age():
     cands, used = collect(spec_with(), serper, FakeAts(boards))
     names = {c.name_hint for c in cands}
     assert names == {"Acme Digital", "Uker"}  # stale, wrong-place and non-sales boards dropped
-    assert used == 1
+    from app.pipeline.sources import board_queries
+    assert used == len(board_queries(spec_with().sources[0])) == serper.calls  # plan query + per-platform top-up
     acme = next(c for c in cands if c.name_hint == "Acme Digital")
     assert len(acme.seed_hits) == 2 and all(h.kind == "ats" for h in acme.seed_hits)  # "Chef" excluded
     assert acme.category == "digital agency" and acme.prior > 0.8  # two roles beat one
@@ -164,3 +165,13 @@ def test_a_large_employer_board_is_not_a_candidate():
     serper = FakeSerper(["https://jobs.lever.co/acme", "https://jobs.lever.co/bigco"])
     found, _ = collect(spec_with(), serper, FakeAts(boards))
     assert [c.name_hint for c in found] == ["Acme Digital"]
+
+
+def test_board_searches_reach_every_platform_and_the_new_greenhouse_host():
+    """Job 15: two plan queries, one on Greenhouse's retired host, found two boards."""
+    from app.pipeline.sources import MAX_BOARD_QUERIES, board_queries
+    src = spec_with(search_queries=['site:boards.greenhouse.io "frontend developer"'],
+                    role_keywords=["developer", "engineer"], locations=["United Kingdom"]).sources[0]
+    qs = board_queries(src)
+    assert 'job-boards.greenhouse.io' in qs[0] and len(qs) <= MAX_BOARD_QUERIES
+    assert any("jobs.ashbyhq.com" in q for q in qs) and any("jobs.lever.co" in q for q in qs)

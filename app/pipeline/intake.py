@@ -49,6 +49,17 @@ Rank every signal you propose on this ladder, and spend your best queries at the
 At least two of your signals must come from levels 1 and 2. Write every signal as an observable public
 event someone could link to, never as a state of mind or a condition you assume.
 
+How to write level-1 queries, which is where most budget is wasted:
+- Search for the document the BUYER wrote, not for pages ABOUT requests for proposals. Agencies publish
+  "how to write an RFP" and "we respond to RFPs" pages full of the same words, so "request for proposal"
+  plus "website redesign" mostly returns sellers. Prefer filetype:pdf or filetype:docx, plus ONE phrase only
+  a buyer's brief contains: "submission deadline", "scope of work", "we invite proposals", "evaluation
+  criteria", "proposals should be sent to", "the successful supplier".
+- Keep queries broad enough to match: at most 3 quoted phrases per query (the subject plus one buyer
+  phrase is usually right). Stacking four or five exact phrases matches nothing and wastes the search.
+- Exclude seller vocabulary where it helps: -"our services" -"our clients" -"case study" -"we help".
+- Google has no wildcard in site:. Write site:co.uk, never site:*.co.uk (that form returns nothing).
+
 Before you propose a channel, ask whether THIS client could actually win work through it. A signal the
 client cannot act on is worse than no signal: it fills the list with companies they can never sell to.
 - Public-sector tenders and government procurement are only worth searching when the client is based in

@@ -131,6 +131,11 @@ def _signal_date(url: str, bundle: ResearchBundle, today: date) -> TrustedDate |
             source = DateSource.JOB_POSTING if hit.kind == "ats" else DateSource.OFFICIAL_NOTICE
             return TrustedDate(date.fromisoformat(hit.date_text), source)
     page = bundle.pages.get(url)
+    if page is not None and page.is_document:
+        # A document has no HTML to date. Its embedded creation date is when it was written: an RFP issued
+        # today in a years-old template dates old and fails freshness, which is the safe direction. A date
+        # stated in the text near the quote (event date) still takes precedence when earlier.
+        return TrustedDate(date.fromisoformat(page.doc_date), DateSource.DOCUMENT_META) if page.doc_date else None
     if page is not None and (d := extract_page_date(page.html, url)):
         return d
     for hit in bundle.seed_hits:

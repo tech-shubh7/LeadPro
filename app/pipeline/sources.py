@@ -46,12 +46,31 @@ def notice_hit(a: Award, today: date) -> SearchHit:
                      searched_on=today.isoformat())
 
 
+MAX_BOARD_QUERIES = 8
+# Where each platform's boards are indexed. Greenhouse moved boards to job-boards.greenhouse.io; searches
+# for the old host alone now return nothing (job 15).
+BOARD_HOSTS = ("jobs.lever.co", "job-boards.greenhouse.io", "jobs.ashbyhq.com")
+
+
+def board_queries(src: SourceSpec) -> list[str]:
+    """The plan's board searches (old Greenhouse host widened to both), topped up with one search per
+    platform and role so the source does not rest on two queries. A board is only a lead once its own API
+    shows matching, dated, open roles, so a broad search costs a query, never a false lead."""
+    out = [q.replace("site:boards.greenhouse.io", "(site:boards.greenhouse.io OR site:job-boards.greenhouse.io)")
+           for q in src.search_queries]
+    where = f' "{src.locations[0]}"' if src.locations else ""
+    for role in src.role_keywords[:2]:
+        for host in BOARD_HOSTS:
+            out.append(f'site:{host} "{role}"{where}')
+    return list(dict.fromkeys(out))[:MAX_BOARD_QUERIES]
+
+
 async def _ats_candidates(src: SourceSpec, spec: JobSpec, serper: SerperClient, ats: AtsClient, gl: str,
                           today: date, budget: int):
     from app.pipeline.discover import Candidate
     tbs = "qdr:m" if spec.freshness_days <= 45 else "qdr:y"
     boards: dict[tuple[str, str], None] = {}
-    queries = src.search_queries[:max(0, budget)]
+    queries = board_queries(src)[:max(0, budget)]
     used = len(queries)
     for hits in await asyncio.gather(*(serper.query(q, kind="search", gl=gl, num=10, tbs=tbs) for q in queries)):
         for hit in hits:

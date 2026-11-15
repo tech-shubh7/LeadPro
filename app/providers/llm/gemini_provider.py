@@ -45,6 +45,18 @@ COOLDOWN_S = 300.0
 _cooling: dict[str, float] = {}  # model -> monotonic time it may be tried again (process-wide)
 
 
+_MUST_THINK: set[str] = set()  # models seen rejecting thinking_budget=0 (process-wide)
+
+
+def _thinking_is_off(config) -> bool:
+    tc = getattr(config, "thinking_config", None)
+    return tc is not None and tc.thinking_budget == 0
+
+
+def _without_thinking_off(config):
+    return config.model_copy(update={"thinking_config": None}) if _thinking_is_off(config) else config
+
+
 def _cool(model: str) -> None:
     _cooling[model] = time.monotonic() + COOLDOWN_S
 
@@ -90,10 +102,12 @@ class GeminiProvider:
         last: Exception | None = None
         for i, current in enumerate(chain):
             attempts = ATTEMPTS if i == 0 else 2
-            for attempt in range(attempts):
+            cfg = _without_thinking_off(config) if current in _MUST_THINK else config
+            attempt = 0
+            while attempt < attempts:
                 try:
                     resp = await asyncio.wait_for(self.client.aio.models.generate_content(
-                        model=current, contents=wrap_data(data), config=config), CALL_TIMEOUT_S)
+                        model=current, contents=wrap_data(data), config=cfg), CALL_TIMEOUT_S)
                     if current != model:
                         log.warning("gemini %s was unavailable; %s answered instead", model, current)
                     _cooling.pop(current, None)
@@ -101,8 +115,20 @@ class GeminiProvider:
                 except genai_errors.APIError as exc:
                     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
                     last = exc
+                    if code == 400 and _thinking_is_off(cfg):
+                        # Some models cannot turn thinking off and reject budget 0 as an invalid argument
+                        # (gemini-3.5-flash-lite does). Ask again with the model's default thinking.
+                        _MUST_THINK.add(current)
+                        cfg = _without_thinking_off(cfg)
+                        log.warning("gemini %s cannot disable thinking; retrying with its default", current)
+                        continue  # same attempt count: this was our request's shape, not an outage
                     if code not in RETRY_CODES and code != 404:
-                        raise LLMRefusal(f"gemini {current}: {exc}") from exc
+                        if current == model:
+                            raise LLMRefusal(f"gemini {current}: {exc}") from exc
+                        # A fallback that cannot serve this request: try the next one, do not fail the step.
+                        log.warning("gemini fallback %s refused the request (%s); trying the next", current, code)
+                        _cool(current)
+                        break
                     if code == 404 or attempt == attempts - 1:
                         _cool(current)
                         break  # this model is gone or still overloaded: try the next one
@@ -110,6 +136,7 @@ class GeminiProvider:
                     log.warning("gemini %s returned %s, retrying in %.1fs (%d/%d)",
                                 current, code, delay, attempt + 1, attempts - 1)
                     await asyncio.sleep(delay)
+                    attempt += 1
                 except (TimeoutError, httpx.TransportError) as exc:
                     last = exc  # stalled or dropped connection: do not wait on this model again
                     log.warning("gemini %s: %s", current, type(exc).__name__)

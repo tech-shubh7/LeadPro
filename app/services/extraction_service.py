@@ -12,7 +12,7 @@ from app.models.enums import DateSource
 from app.providers.llm.llm_provider import LLMProvider
 from app.schemas.job_spec_schema import JobSpec
 from app.services.research_service import ResearchBundle
-from app.services.source_service import FIRST_PARTY_KINDS
+from app.services.source_service import FIRST_PARTY_KINDS, POSTING_KINDS
 from app.utils.dates import TrustedDate, extract_page_date, parse_event_date, parse_relative_date
 from app.utils.evidence_verifier import Claim, canonical_url, normalize_text, phrase_near_quote, verify_claims
 
@@ -151,7 +151,7 @@ def _signal_date(url: str, bundle: ResearchBundle, today: date) -> TrustedDate |
         hit
     ) in bundle.seed_hits:  # API-published dates (job posting / government notice) outrank page guessing
         if hit.link == url and hit.kind in FIRST_PARTY_KINDS and hit.date_text:
-            source = DateSource.JOB_POSTING if hit.kind == "ats" else DateSource.OFFICIAL_NOTICE
+            source = DateSource.JOB_POSTING if hit.kind in POSTING_KINDS else DateSource.OFFICIAL_NOTICE
             return TrustedDate(date.fromisoformat(hit.date_text), source)
     page = bundle.pages.get(url)
     if page is not None and page.is_document:

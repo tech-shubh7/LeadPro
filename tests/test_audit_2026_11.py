@@ -482,3 +482,41 @@ def test_source_candidates_outside_the_icp_are_not_researched():
     )
     kept = asyncio.run(icp_gate(spec, LLM(), [cand("Pixel Agency"), cand("Sardine")]))
     assert [c.name_hint for c in kept] == ["Pixel Agency"]
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "theorg.com",
+        "signalhire.com",
+        "agencies.co",
+        "genome.gov",
+        "harvard.edu",
+        "leeds.gov.uk",
+        "clutch.co",
+        "uk.crunchbase.com",
+        "apollo.io",
+        "craft.co",
+    ],
+)
+def test_data_brokers_directories_and_public_bodies_are_never_a_company_website(domain):
+    """Job 25 matched agencies to theorg.com, signalhire.com, agencies.co and genome.gov."""
+    from app.services.discovery_service import is_third_party
+
+    assert is_third_party(domain)
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "craft.co.uk",
+        "apollo-digital.co.uk",
+        "govtech-solutions.co.uk",
+        "bamboonine.co.uk",
+        "agencyanalytics.com",
+    ],
+)
+def test_a_real_company_sharing_a_word_with_a_broker_is_not_blocked(domain):
+    from app.services.discovery_service import is_third_party
+
+    assert not is_third_party(domain)

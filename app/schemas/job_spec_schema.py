@@ -45,7 +45,7 @@ class SourceSpec(BaseModel):
     role, a supplier that just won a contract). Candidates found this way still pass every downstream check;
     the source only decides who gets researched, replacing noisy general web search."""
 
-    type: Literal["ats_jobs", "contracts_awards", "agent_browse"]
+    type: Literal["ats_jobs", "contracts_awards", "agent_browse", "job_ads"]
     category: str | None = (
         None  # what these companies are ("digital agency"); keeps the website lookup on target
     )
@@ -84,6 +84,8 @@ class SourceSpec(BaseModel):
             raise ValueError("ats_jobs needs search_queries and role_keywords")
         if self.type == "contracts_awards" and not (self.keywords or self.cpv_prefixes):
             raise ValueError("contracts_awards needs keywords or cpv_prefixes")
+        if self.type == "job_ads" and not self.keywords:
+            raise ValueError("job_ads needs keywords (the job-ad searches to run)")
         if self.type == "agent_browse" and not (self.url and self.goal):
             raise ValueError("agent_browse needs url and goal")
         return self

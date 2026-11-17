@@ -24,6 +24,9 @@ from app.utils.logger import get_logger
 from app.utils.normalize import normalize_domain
 
 # Domains that host content about *other* companies (news, job boards, directories, social).
+# Brokers and directories whose brand is an ordinary word a real company could be named after: blocked by
+# exact domain only, so an agency called "Craft" or "Apollo" is never mistaken for one.
+_AMBIGUOUS_THIRD_PARTY = frozenset({"craft.co", "seamless.ai", "apollo.io", "bark.com", "g2.com"})
 THIRD_PARTY_DOMAINS = frozenset(
     {
         "linkedin.com",
@@ -152,7 +155,6 @@ THIRD_PARTY_DOMAINS = frozenset(
         "finance.yahoo.com",
     }
 )
-STAFFING_WORDS = ("recruitment", "recruiter", "staffing", "manpower", "placement", "headhunt")
 logger = get_logger(__name__)
 GL = {"GB": "uk", "US": "us", "IN": "in"}
 
@@ -162,6 +164,37 @@ GL = {"GB": "uk", "US": "us", "IN": "in"}
 # country site cannot pass for a company's own website. Only names that are never a buyer's own brand.
 THIRD_PARTY_BRANDS = frozenset(
     {
+        # people and company data brokers: pages ABOUT a company, never its own site (job 25)
+        "theorg",
+        "signalhire",
+        "rocketreach",
+        "zoominfo",
+        "lusha",
+        "kaspr",
+        "contactout",
+        "leadiq",
+        "crunchbase",
+        "pitchbook",
+        "owler",
+        "companieshouse",
+        "endole",
+        "opencorporates",
+        # agency and business directories, review and listing sites
+        "agencies",
+        "clutch",
+        "designrush",
+        "sortlist",
+        "goodfirms",
+        "themanifest",
+        "upcity",
+        "yell",
+        "checkatrade",
+        "trustpilot",
+        "cylex",
+        "hotfrog",
+        "brownbook",
+        "yelp",
+        "capterra",
         "indeed",
         "glassdoor",
         "ziprecruiter",
@@ -197,8 +230,6 @@ THIRD_PARTY_BRANDS = frozenset(
         "workingnomads",
         "builtin",
         "otta",
-        "crunchbase",
-        "trustpilot",
         "wikipedia",
         "facebook",
         "instagram",
@@ -215,8 +246,13 @@ LISTING_WORDS = re.compile(
 )
 
 
+_PUBLIC_BODY = re.compile(
+    r"(^|\.)(gov|mil|edu|nhs|police|ac)(\.[a-z]{2})?$"
+)  # .gov, .gov.uk, .ac.uk, .edu ...
+
+
 def is_third_party(domain: str) -> bool:
-    if domain in THIRD_PARTY_DOMAINS or domain.endswith((".gov.uk", ".ac.uk", ".nhs.uk", ".police.uk")):
+    if domain in THIRD_PARTY_DOMAINS or domain in _AMBIGUOUS_THIRD_PARTY or _PUBLIC_BODY.search(domain):
         return True
     labels = domain.split(".")[:-1]
     return any(label in THIRD_PARTY_BRANDS or _JOB_BOARD_LABEL.match(label) for label in labels)

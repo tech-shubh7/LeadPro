@@ -77,7 +77,7 @@ def source_class(url: str, company_domain: str, seed_kinds: dict[str, str]) -> s
     hostname = (urlparse(url).hostname or "").lower().removeprefix("www.")
     if kind == "notice" or any(hostname == h or hostname.endswith(f".{h}") for h in _OFFICIAL_HOSTS):
         return "official_notice"
-    if kind == "ats":
+    if kind in ("ats", "job_ad"):
         return "job_posting"
     own = normalize_domain(url) == company_domain
     if url.lower().split("?")[0].endswith(".pdf"):

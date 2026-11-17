@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     generect_api_key: str = ""
     hunter_api_key: str = ""
     tinyfish_api_key: str = ""
+    reed_api_key: str = ""  # Reed.co.uk Jobseeker API: UK job ads from direct employers
     # Search providers in order; the next is used only when one errors. Serper (Google) first for result
     # quality and dates; TinyFish search as the free fallback. Providers without a key are skipped.
     search_provider_order: list[str] = ["serper", "tinyfish"]

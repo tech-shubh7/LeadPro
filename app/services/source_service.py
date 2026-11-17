@@ -15,7 +15,10 @@ from datetime import date, timedelta
 
 import httpx
 
+from app.config.constants import STAFFING_WORDS
+from app.config.settings import get_settings
 from app.providers.jobs.ats_client import AtsClient, JobPosting, parse_board_url
+from app.providers.jobs.reed_client import ReedClient
 from app.providers.search.serper_client import SearchHit, SerperClient
 from app.providers.tenders.contracts_finder_client import Award, ContractsFinderClient
 from app.schemas.job_spec_schema import JobSpec, SourceSpec
@@ -26,7 +29,8 @@ from app.utils.normalize import normalize_domain
 logger = get_logger(__name__)
 MAX_HITS_PER_COMPANY = 3
 # Kinds of SearchHit whose text and date come straight from a first-party API response fetched in this run.
-FIRST_PARTY_KINDS = frozenset({"ats", "notice"})
+FIRST_PARTY_KINDS = frozenset({"ats", "job_ad", "notice"})
+POSTING_KINDS = frozenset({"ats", "job_ad"})  # dated by the job board itself: a job posting
 
 
 def _phrase(words: list[str]) -> re.Pattern | None:
@@ -199,6 +203,71 @@ def browse_url_problem(url: str | None) -> str | None:
     return None
 
 
+# An ad written by a recruiter for someone else's vacancy names the recruiter, not the company that needs
+# the work. Reed's postedByDirectEmployer filter catches most; these phrases catch the rest.
+_RECRUITER_WORDING = re.compile(
+    r"\b(our client|my client|on behalf of|we are recruiting for|recruiting on behalf)\b", re.I
+)
+MAX_ADS_PER_SEARCH = 100
+
+
+def _is_recruiter_ad(job) -> bool:
+    name = job.employer_name.lower()
+    return any(w in name for w in STAFFING_WORDS) or bool(_RECRUITER_WORDING.search(job.description))
+
+
+async def _job_ad_candidates(src: SourceSpec, spec: JobSpec, reed, today: date) -> list:
+    """Employers advertising contract/freelance roles on Reed, inside the freshness window, one candidate per
+    employer with its ads as dated, first-party evidence. Signal first: every company found already has its
+    reason, and nothing is spent researching companies without one."""
+    from app.services.discovery_service import Candidate
+
+    if reed is None:
+        logger.warning("job-ad source skipped: no Reed client (REED_API_KEY)")
+        return []
+    locations = src.locations or [""]
+    by_employer: dict[str, list] = {}
+    for keywords in src.keywords:
+        for location in locations:
+            for job in await reed.search(
+                keywords, location=location, contract=True, limit=MAX_ADS_PER_SEARCH
+            ):
+                if job.posted_on is None or not within_window(job.posted_on, today, spec.freshness_days):
+                    continue  # undated or stale: not a current sign
+                if _is_recruiter_ad(job):
+                    continue
+                by_employer.setdefault(job.employer_name.lower(), []).append(job)
+    out = []
+    for jobs in by_employer.values():
+        jobs = sorted({j.job_id: j for j in jobs}.values(), key=lambda j: j.posted_on, reverse=True)
+        first = jobs[0]
+        titles = "; ".join(f"{j.title} ({j.posted_on.isoformat()})" for j in jobs[:MAX_HITS_PER_COMPANY])
+        out.append(
+            Candidate(
+                domain="",
+                name_hint=first.employer_name,
+                category=src.category,
+                prior=min(0.95, 0.7 + 0.05 * len(jobs)),
+                triage_note=f"{len(jobs)} contract ad(s) on Reed: {titles}",
+                seed_hits=[_job_ad_hit(j, today) for j in jobs[:MAX_HITS_PER_COMPANY]],
+            )
+        )
+    return out
+
+
+def _job_ad_hit(job, today: date) -> SearchHit:
+    where = f" ({job.location})" if job.location else ""
+    return SearchHit(
+        title=f"{job.employer_name} job posting: {job.title}{where}",
+        link=job.url,
+        snippet=f"Posted {job.posted_on.isoformat()} on Reed. {job.description}".strip(),
+        date_text=job.posted_on.isoformat(),
+        kind="job_ad",
+        query=f"reed:{job.employer_id or job.job_id}",
+        searched_on=today.isoformat(),
+    )
+
+
 async def _browse_candidates(src: SourceSpec, agent) -> list:
     """Companies a browser agent lists from one public page. Discovery only: each becomes a candidate
     whose evidence page our own fetcher reads and quote-checks later."""
@@ -249,12 +318,17 @@ async def collect_sources(
     clients = clients or {}
     ats = clients.get("ats") or AtsClient()
     cf = clients.get("contracts") or ContractsFinderClient()
+    owns_reed = "reed" not in clients and bool(get_settings().reed_api_key)
+    if owns_reed:
+        clients = {**clients, "reed": ReedClient()}
     candidates, spent = [], 0
     try:
         for src in spec.sources:
             try:
                 if src.type == "ats_jobs":
                     found, used = await _ats_candidates(src, spec, serper, ats, gl, today, budget - spent)
+                elif src.type == "job_ads":
+                    found, used = await _job_ad_candidates(src, spec, clients.get("reed"), today), 0
                 elif src.type == "agent_browse":
                     found, used = await _browse_candidates(src, clients.get("agent")), 0
                 else:
@@ -270,6 +344,8 @@ async def collect_sources(
             await ats.client.aclose()
         if "contracts" not in clients:
             await cf.client.aclose()
+        if owns_reed:
+            await clients["reed"].aclose()
     return candidates, spent
 
 

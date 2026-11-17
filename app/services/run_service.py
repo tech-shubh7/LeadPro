@@ -23,6 +23,7 @@ from app.compliance.country_pack import (
     REGISTRY_MATCH_OFFICER,
     REGISTRY_MATCH_SOURCE,
 )
+from app.config.constants import STAFFING_WORDS
 from app.config.database import session_scope
 from app.config.settings import get_settings
 from app.exceptions.custom_exceptions import (
@@ -44,7 +45,7 @@ from app.providers.web.page_fetcher import Fetcher
 from app.repositories import lead_repository as store
 from app.schemas.job_spec_schema import JobSpec
 from app.services.contact_service import attach_emails, rank_decision_makers
-from app.services.discovery_service import GL, STAFFING_WORDS, Candidate, discover
+from app.services.discovery_service import GL, Candidate, discover
 from app.services.draft_service import write_draft
 from app.services.export_service import LeadResult, rank_key, write_outputs
 from app.services.extraction_service import extract

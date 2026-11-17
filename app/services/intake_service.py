@@ -102,6 +102,11 @@ in `where_to_look`. Web search is only one channel, and often not the best.
   site:reddit.com/r/smallbusiness "recommend an agency". Only forums readable without logging in.
 - job_board_source (company job boards read through their APIs): companies hiring for a skill. Strong
   when the client sells that skill as a service or white-label; useless when the buyer would never hire it.
+- job_ads_source (UK only: Reed job ads from DIRECT employers, contract roles): companies advertising
+  contract or freelance work themselves, dated, with the employer named. The strongest signal-first source
+  when the client sells that skill as a service or white-label: a company hiring contractors has more work
+  than people. Give 3-6 short job-ad searches a hiring company would title its ad with, e.g.
+  "freelance web developer", "contract react developer", "contract AI engineer".
 - contract_awards_source (UK Contracts Finder award notices): SME suppliers that just WON public
   contracts. Not tenders to bid on: winners who now need capacity. Strong for subcontracting and
   white-label offers to the winners. UK buyers only.
@@ -203,6 +208,16 @@ class DraftedAwardsSource(BaseModel):
     why: str = Field(description="Why the winners of these contracts are buyers for this client")
 
 
+class DraftedJobAdsSource(BaseModel):
+    """UK job ads from direct employers (Reed): companies advertising contract or freelance work."""
+
+    keywords: list[str] = Field(description="3-6 short job-ad searches, e.g. 'freelance web developer'")
+    category: str = Field(
+        default="", description="What the advertising companies should be, e.g. 'digital agency'"
+    )
+    why: str = Field(description="Why a company advertising these roles is a buyer for this client")
+
+
 class DraftedBrowseSource(BaseModel):
     """One public page a browser agent reads, listing companies that are likely buyers."""
 
@@ -225,6 +240,10 @@ class PlanOut(BaseModel):
         default="",
         description="Two to four plain sentences for the operator: where this client's buyers can be found "
         "and why these channels, including what you deliberately left out and why.",
+    )
+    job_ads_source: DraftedJobAdsSource | None = Field(
+        default=None,
+        description="UK buyers only: job-ad searches for companies hiring contractors (see catalog)",
     )
     contract_awards_source: DraftedAwardsSource | None = Field(
         default=None,
@@ -420,6 +439,16 @@ def planned_sources(out: "PlanOut", country: str) -> list[dict]:
     sources: list[dict] = []
     if out.job_board_source:
         sources.append(out.job_board_source.model_dump() | {"type": "ats_jobs"})
+    if out.job_ads_source and out.job_ads_source.keywords and country == "GB":  # Reed is a UK job board
+        ads = out.job_ads_source
+        sources.append(
+            {
+                "type": "job_ads",
+                "keywords": ads.keywords[:6],
+                "category": ads.category or None,
+                "why": ads.why,
+            }
+        )
     if out.contract_awards_source and country == "GB":  # Contracts Finder is a UK dataset
         awards = out.contract_awards_source
         sources.append(

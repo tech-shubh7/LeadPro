@@ -3,11 +3,13 @@ import asyncio
 import httpx
 import respx
 
-from app.core.evidence_verify import quote_in_text
-from app.core.fetcher import Fetcher, PageCache, extract_main_text
-from app.core.normalize import extract_emails, is_role_email
+from app.providers.web.page_fetcher import Fetcher, PageCache, extract_main_text
+from app.utils.evidence_verifier import quote_in_text
+from app.utils.normalize import extract_emails, is_role_email
 
-PAGE = "Acme Ltd today confirmed it will open a second fulfilment centre in Leeds next spring, creating 40 jobs."
+PAGE = (
+    "Acme Ltd today confirmed it will open a second fulfilment centre in Leeds next spring, creating 40 jobs."
+)
 
 
 def test_ellipsis_quote_parts_must_all_appear_in_order():
@@ -19,15 +21,22 @@ def test_ellipsis_quote_parts_must_all_appear_in_order():
 
 def test_image_names_are_not_emails_and_role_list_extended():
     assert extract_emails("logo@2x.png jane@acme.co.uk", "acme.co.uk") == ["jane@acme.co.uk"]
-    assert is_role_email("noreply@acme.co.uk") and is_role_email("press@acme.co.uk")
+    assert is_role_email("noreply@acme.co.uk")
+    assert is_role_email("press@acme.co.uk")
 
 
 def test_team_page_names_survive_text_extraction():
-    html = "<html><body><nav>Home</nav><div class='team'>" + "".join(
-        f"<div class='card'><h3>Person {i} Surname{i}</h3><p>Head of Function {i}</p></div>" for i in range(12)
-    ) + "</div></body></html>"
+    html = (
+        "<html><body><nav>Home</nav><div class='team'>"
+        + "".join(
+            f"<div class='card'><h3>Person {i} Surname{i}</h3><p>Head of Function {i}</p></div>"
+            for i in range(12)
+        )
+        + "</div></body></html>"
+    )
     text = extract_main_text(html)
-    assert "Surname0" in text and "Surname11" in text
+    assert "Surname0" in text
+    assert "Surname11" in text
 
 
 @respx.mock
@@ -50,17 +59,26 @@ def test_oversized_page_is_skipped(tmp_path):
 
 
 def test_url_variants_still_verify():
-    from app.core.evidence_verify import Claim, verify_claims
+    from app.utils.evidence_verifier import Claim, verify_claims
+
     pages = {"https://www.acme.co.uk/news/leeds/": PAGE}
     claims = [Claim("expansion", "https://acme.co.uk/news/leeds#top", "second fulfilment centre in Leeds")]
     verified, rejected = verify_claims(claims, pages)
-    assert len(verified) == 1 and not rejected
+    assert len(verified) == 1
+    assert not rejected
 
 
 @respx.mock
 def test_retry_on_429_then_success():
-    from app.core.http import request_with_retry
+    from app.utils.http_retry import request_with_retry
+
     route = respx.get("https://api.example.com/x")
-    route.side_effect = [httpx.Response(429, headers={"retry-after": "0"}), httpx.Response(200, json={"ok": True})]
-    resp = asyncio.run(request_with_retry(httpx.AsyncClient(), "GET", "https://api.example.com/x", base_delay=0))
-    assert resp.status_code == 200 and route.call_count == 2
+    route.side_effect = [
+        httpx.Response(429, headers={"retry-after": "0"}),
+        httpx.Response(200, json={"ok": True}),
+    ]
+    resp = asyncio.run(
+        request_with_retry(httpx.AsyncClient(), "GET", "https://api.example.com/x", base_delay=0)
+    )
+    assert resp.status_code == 200
+    assert route.call_count == 2

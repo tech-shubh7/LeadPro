@@ -1,0 +1,98 @@
+{% macro icon(name, cls="") %}<svg class="i {{ cls }}" aria-hidden="true"><use href="#i-{{ name }}"/></svg>{% endmacro %}
+
+{% macro stat(label, value, hint="", lead=False, key="", ico="") %}
+<div class="stat {{ 'lead' if lead }}">
+  <div class="top"><span class="label">{{ label }}</span>{% if ico %}<span class="ico">{{ icon(ico) }}</span>{% endif %}</div>
+  <div class="value"{% if key %} data-live="{{ key }}"{% endif %}>{{ value }}</div>
+  {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro pager(page, request) %}
+{% if page.pages > 1 %}
+<nav class="pager" aria-label="Pages">
+  <span class="muted">{{ page.first }}–{{ page.last }} of {{ page.total | num }}</span>
+  <span class="spacer"></span>
+  {% if page.page > 1 %}
+    <a class="btn btn-sm" href="{{ request.url.include_query_params(page=page.page - 1) }}">{{ icon('arrow-left') }}Prev</a>
+  {% endif %}
+  <span class="muted">{{ page.page }} / {{ page.pages }}</span>
+  {% if page.page < page.pages %}
+    <a class="btn btn-sm" href="{{ request.url.include_query_params(page=page.page + 1) }}">Next{{ icon('arrow-right') }}</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endmacro %}
+
+{# Widths come from a fixed set of classes in 5% steps, not inline styles, so CSP needs no 'unsafe-inline'. #}
+{% macro w(part, whole) %}w{{ (((part or 0) / whole * 20) | round | int * 5) if whole else 0 }}{% endmacro %}
+
+{% macro score(lead) %}
+{% if lead.total_score is none %}<span class="muted">—</span>{% else %}
+<div class="score" title="Match {{ lead.total_score }}/100 = Fit {{ lead.fit_score }}/40 (looks like a buyer) + Need {{ lead.intent_score }}/40 (shows a buying sign) + Timing {{ lead.timing_score }}/20 (how recent)">
+  <b>{{ lead.total_score }}</b>
+  <span class="bars" aria-hidden="true">
+    <i class="fit {{ w(lead.fit_score, 40) }}"></i>
+    <i class="intent {{ w(lead.intent_score, 40) }}"></i>
+    <i class="timing {{ w(lead.timing_score, 20) }}"></i>
+  </span>
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro tier(value) %}
+{% if value == 'signal' %}<span class="pill pill-accent" title="Showed a dated sign of buying">{{ icon('bolt') }}Buying sign</span>
+{% else %}<span class="pill pill-violet" title="Looks like a buyer, but no recent sign of buying was found">{{ icon('target') }}Good fit, no sign</span>{% endif %}
+{% endmacro %}
+
+{% macro status(value) %}
+{% if value == 'done' %}<span class="pill pill-ok">{{ icon('check') }}Complete</span>
+{% elif value == 'done_with_shortfall' %}<span class="pill pill-warn" title="Finished. Found fewer than asked rather than pad the list with weak leads">{{ icon('check') }}Finished, fewer than asked</span>
+{% elif value == 'failed' %}<span class="pill pill-bad">{{ icon('alert') }}Stopped</span>
+{% elif value == 'awaiting_icp_review' %}<span class="pill pill-info">{{ icon('clock') }}Waiting for your OK</span>
+{% elif value == 'researching_client' %}<span class="pill pill-info pill-live"><i class="dot"></i>Preparing the plan</span>
+{% elif value == 'queued' %}<span class="pill pill-accent pill-live"><i class="dot"></i>Starting</span>
+{% elif value == 'discovering' %}<span class="pill pill-accent pill-live"><i class="dot"></i>Finding companies</span>
+{% elif value == 'researching' %}<span class="pill pill-accent pill-live"><i class="dot"></i>Checking companies</span>
+{% elif value == 'scoring' %}<span class="pill pill-accent pill-live"><i class="dot"></i>Scoring</span>
+{% elif value == 'finding_contacts' %}<span class="pill pill-accent pill-live"><i class="dot"></i>Finding emails</span>
+{% elif value == 'revalidating' %}<span class="pill pill-accent pill-live"><i class="dot"></i>Final checks</span>
+{% else %}<span class="pill pill-accent pill-live"><i class="dot"></i>{{ value | title_case }}</span>{% endif %}
+{% endmacro %}
+
+{% macro verdict(contact) %}
+{% if contact.email %}<span class="pill pill-ok" title="verified deliverable, not catch-all">{{ icon('check') }}Verified</span>
+{% else %}<span class="pill pill-outline" title="{{ contact.email_finder_status or 'not checked' }}">{{ (contact.email_verdict or 'not found') | title_case }}</span>{% endif %}
+{% endmacro %}
+
+{% macro steps(current) %}
+{% set names = ['Your ask', 'Approve the plan', 'Research'] %}
+<div class="steps" aria-label="Progress">
+  {% for name in names %}
+    <span class="{{ 'on' if loop.index == current else ('done' if loop.index < current) }}"><i>{% if loop.index < current %}✓{% else %}{{ loop.index }}{% endif %}</i>{{ name }}</span>
+    {% if not loop.last %}<span class="sep"></span>{% endif %}
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{% macro ext(url, label="") %}<a class="src" href="{{ url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ label or (url | host) }}{{ icon('external') }}</a>{% endmacro %}
+
+{# One vocabulary for buying-sign strength, used by every page. #}
+{% macro strength(value) %}
+{% if value == 'very_high' %}<span class="pill pill-ok" title="The company publicly asked for this work">They asked for it</span>
+{% elif value == 'high' %}<span class="pill pill-accent" title="A clear sign they need this now">Strong sign</span>
+{% elif value == 'medium' %}<span class="pill pill-warn" title="They have budget, but nothing says they want this">Has budget</span>
+{% else %}<span class="pill" title="A guess, not evidence">Weak hint</span>{% endif %}
+{% endmacro %}
+
+{% macro outreach(allowed, reason) %}
+{% if allowed %}<span class="pill pill-ok" title="{{ reason }}">OK to email</span>
+{% else %}<span class="pill pill-outline" title="{{ reason }}">{{ icon('lock') }}Don't email (country rules)</span>{% endif %}
+{% endmacro %}
+
+{# Combined buying-sign confidence (signal_intelligence_service.combine). #}
+{% macro confidence(tier, summary="") %}
+{% if tier == 'strong' %}<span class="pill pill-ok" title="{{ summary }}">Strong</span>
+{% elif tier == 'good' %}<span class="pill pill-accent" title="{{ summary }}">Good</span>
+{% elif tier == 'weak' %}<span class="pill pill-warn" title="{{ summary }}">Weak: budget only</span>{% endif %}
+{% endmacro %}

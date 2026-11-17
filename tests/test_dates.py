@@ -1,7 +1,7 @@
 from datetime import date
 
-from app.core.dates import extract_page_date, is_dateable_url, parse_relative_date, within_window
 from app.models.enums import DatePrecision, DateSource
+from app.utils.dates import extract_page_date, is_dateable_url, parse_relative_date, within_window
 
 TODAY = date(2026, 10, 30)
 FOOTER_ONLY = "<html><body><p>We make packaging.</p><footer>© 2026 Acme</footer></body></html>"
@@ -22,7 +22,8 @@ def test_homepage_and_about_are_never_dated():
 def test_article_meta_date():
     meta = '<html><head><meta property="article:published_time" content="2026-09-14T10:00:00+01:00"></head></html>'
     d = extract_page_date(meta, "https://news.example.com/acme-raises")
-    assert d.value == date(2026, 9, 14) and d.source == DateSource.ARTICLE_META
+    assert d.value == date(2026, 9, 14)
+    assert d.source == DateSource.ARTICLE_META
 
 
 def test_json_ld_date_preferred():
@@ -32,7 +33,8 @@ def test_json_ld_date_preferred():
 
 def test_url_path_date():
     d = extract_page_date("<html></html>", "https://blog.example.com/2026/09/acme-expands/")
-    assert d.value == date(2026, 9, 1) and d.source == DateSource.URL_PATH
+    assert d.value == date(2026, 9, 1)
+    assert d.source == DateSource.URL_PATH
 
 
 def test_relative_job_dates():
@@ -51,5 +53,6 @@ def test_freshness_window_rejects_old_signal():
 def test_article_time_tag_used_as_last_resort_but_never_footer():
     article = '<html><body><article><time datetime="2026-10-21">21 Oct</time><p>Brand launches at Ulta</p></article><footer>© 2026</footer></body></html>'
     d = extract_page_date(article, "https://theindustry.beauty/brand-lands-at-ulta/")
-    assert d is not None and d.value == date(2026, 10, 21)
+    assert d is not None
+    assert d.value == date(2026, 10, 21)
     assert extract_page_date(FOOTER_ONLY, "https://theindustry.beauty/brand-lands-at-ulta/") is None

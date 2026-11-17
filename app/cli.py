@@ -1,12 +1,12 @@
 import asyncio
 import json
-import logging
 from pathlib import Path
 
 import typer
 
-from app.pipeline.jobspec import load_job
-from app.pipeline.runner import run_job
+from app.schemas.job_spec_schema import load_job
+from app.services.run_service import run_job
+from app.utils.logger import configure_logging
 
 cli = typer.Typer(help="LeadPro: evidence-based qualified B2B lead research")
 
@@ -15,8 +15,8 @@ def _preflight(llm_mode: str, countries: list[str], online: bool = False) -> lis
     """(ok, message) checks: database at the latest migration, and the keys this run will need."""
     from sqlalchemy import text
 
-    from app.config import get_settings
-    from app.db import engine
+    from app.config.database import engine
+    from app.config.settings import get_settings
 
     st = get_settings()
     checks: list[tuple[bool, str]] = []
@@ -27,14 +27,34 @@ def _preflight(llm_mode: str, countries: list[str], online: bool = False) -> lis
         head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
         with engine.connect() as conn:
             current = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        checks.append((current == head, f"database reachable, migration {current} (latest {head})"
-                       + ("" if current == head else ": run `uv run alembic upgrade head`")))
+        checks.append(
+            (
+                current == head,
+                f"database reachable, migration {current} (latest {head})"
+                + ("" if current == head else ": run `uv run alembic upgrade head`"),
+            )
+        )
     except Exception as exc:
         checks.append((False, f"database: {type(exc).__name__}: {exc}"))
     checks.append((bool(st.serper_api_key), "SERPER_API_KEY set (search)"))
     if "GB" in countries:
         checks.append((bool(st.companies_house_api_key), "COMPANIES_HOUSE_API_KEY set (free UK registry)"))
-    checks.append((bool(st.generect_api_key), "GENERECT_API_KEY set (verified emails)"))
+    searchers = [n for n in st.search_provider_order if getattr(st, f"{n}_api_key", "")]
+    checks.append(
+        (bool(searchers), f"search providers with a key, in fallback order: {', '.join(searchers) or 'none'}")
+    )
+    checks.append(
+        (
+            True,
+            "TINYFISH_API_KEY set: page rendering fallback and browse sources on"
+            if st.tinyfish_api_key
+            else "TINYFISH_API_KEY not set: no rendering fallback or browse sources",
+        )
+    )
+    finders = [n for n in st.email_finder_order if getattr(st, f"{n}_api_key", "")]
+    checks.append(
+        (bool(finders), f"email finders with a key, in waterfall order: {', '.join(finders) or 'none'}")
+    )
     if llm_mode == "gemini":
         checks.append((bool(st.gemini_api_key), "GEMINI_API_KEY set (llm mode 'gemini')"))
         if online and st.gemini_api_key:
@@ -43,20 +63,29 @@ def _preflight(llm_mode: str, countries: list[str], online: bool = False) -> lis
 
             # A real generate, not models.get(): metadata lookup succeeds for models the key is not
             # allowed to call, so it passes for a retired model and the run then dies on a 404.
-            client = genai.Client(api_key=st.gemini_api_key,
-                                  http_options=genai_types.HttpOptions(api_version="v1beta"))
+            client = genai.Client(
+                api_key=st.gemini_api_key, http_options=genai_types.HttpOptions(api_version="v1beta")
+            )
             for model in {st.gemini_extract_model, st.gemini_judge_model}:
                 try:
                     client.models.generate_content(
-                        model=model, contents="ok",
-                        config=genai_types.GenerateContentConfig(max_output_tokens=800))
+                        model=model,
+                        contents="ok",
+                        config=genai_types.GenerateContentConfig(max_output_tokens=800),
+                    )
                     checks.append((True, f"Gemini model {model} answers"))
                 except Exception as exc:
                     checks.append((False, f"Gemini model {model}: {type(exc).__name__}: {str(exc)[:200]}"))
     elif llm_mode == "openai":
-        checks.append((bool(st.openai_api_key), "OPENAI_API_KEY set (llm mode 'openai'; use --llm manual without a key)"))
+        checks.append(
+            (
+                bool(st.openai_api_key),
+                "OPENAI_API_KEY set (llm mode 'openai'; use --llm manual without a key)",
+            )
+        )
         if online and st.openai_api_key:
             from openai import OpenAI
+
             for model in {st.llm_extract_model, st.llm_judge_model}:
                 try:
                     OpenAI(api_key=st.openai_api_key).models.retrieve(model)  # free call
@@ -64,13 +93,15 @@ def _preflight(llm_mode: str, countries: list[str], online: bool = False) -> lis
                 except Exception as exc:
                     checks.append((False, f"OpenAI model {model}: {type(exc).__name__}: {exc}"))
     else:
-        checks.append((True, "llm mode 'manual': LLM steps are answered in work/llm_tasks (see docs/WORKFLOWS.md)"))
+        checks.append(
+            (True, "llm mode 'manual': LLM steps are answered in work/llm_tasks (see docs/WORKFLOWS.md)")
+        )
     return checks
 
 
 def _resolve_mode(llm: str | None) -> str:
-    from app.config import get_settings
-    from app.pipeline.runner import LLM_MODES
+    from app.config.settings import get_settings
+    from app.providers.llm.llm_factory import LLM_MODES
 
     mode = llm or get_settings().llm_mode
     if mode not in LLM_MODES:
@@ -82,7 +113,9 @@ def _resolve_mode(llm: str | None) -> str:
 @cli.command()
 def doctor(
     llm: str = typer.Option(None, "--llm", help="openai | gemini | manual (default: LLM_MODE from .env)"),
-    online: bool = typer.Option(False, "--online", help="Also confirm the OpenAI models exist (free API call)"),
+    online: bool = typer.Option(
+        False, "--online", help="Also confirm the OpenAI models exist (free API call)"
+    ),
 ) -> None:
     """Check the database and API keys before a run. Spends nothing."""
     mode = _resolve_mode(llm)
@@ -98,23 +131,34 @@ def doctor(
 def run(
     job_file: Path,
     out_dir: Path = Path("output"),
-    llm: str = typer.Option(None, "--llm", help="openai | gemini | manual (no key: answer tasks with "
-                                                "`leadpro task`/`leadpro answer`). Default: LLM_MODE"),
-    fresh: bool = typer.Option(False, "--fresh", help="Ignore dev caches: live searches and pages (24h page cache). "
-                                                     "Use for client/demo runs; dev caches are for debugging reruns."),
+    llm: str = typer.Option(
+        None,
+        "--llm",
+        help="openai | gemini | manual (no key: answer tasks with "
+        "`leadpro task`/`leadpro answer`). Default: LLM_MODE",
+    ),
+    fresh: bool = typer.Option(
+        False,
+        "--fresh",
+        help="Ignore dev caches: live searches and pages (24h page cache). "
+        "Use for client/demo runs; dev caches are for debugging reruns.",
+    ),
 ) -> None:
     """Run a job described by a YAML file and write XLSX + CSV outputs."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    configure_logging()
     spec = load_job(job_file)
     mode = _resolve_mode(llm)
     if fresh:
-        from app.config import get_settings
+        from app.config.settings import get_settings
+
         get_settings().app_env = "prod"  # before any provider is built: Serper/page caches follow is_dev
     failed = [msg for ok, msg in _preflight(mode, spec.countries) if not ok]
     if failed:
         typer.echo("Not ready:\n  " + "\n  ".join(failed))
         raise typer.Exit(1)
-    typer.echo(f"LLM mode: {mode}" + (" (answer tasks: `uv run leadpro tasks --wait`)" if mode == "manual" else ""))
+    typer.echo(
+        f"LLM mode: {mode}" + (" (answer tasks: `uv run leadpro tasks --wait`)" if mode == "manual" else "")
+    )
     summary = asyncio.run(run_job(spec, out_dir, llm_mode=mode))
     typer.echo(f"Job {summary.job_id}: {summary.status.value}")
     typer.echo(f"  qualified (verified contact): {summary.qualified}")
@@ -129,7 +173,9 @@ def run(
 
 
 @cli.command()
-def tasks(wait: int = typer.Option(0, "--wait", help="Seconds to wait for a task to appear (0 = don't wait)")) -> None:
+def tasks(
+    wait: int = typer.Option(0, "--wait", help="Seconds to wait for a task to appear (0 = don't wait)"),
+) -> None:
     """Manual mode: list LLM tasks waiting for an answer (oldest first)."""
     import time
 
@@ -152,13 +198,18 @@ def task(task_id: str) -> None:
     from app.providers.llm.manual_provider import TASK_DIR
 
     t = json.loads((TASK_DIR / f"{task_id}.task.json").read_text())
-    typer.echo(f"# {t['id']} — {t['step']} (role model: {t['role_model']})\n\n## Instructions\n{t['instructions']}")
+    typer.echo(
+        f"# {t['id']} — {t['step']} (role model: {t['role_model']})\n\n## Instructions\n{t['instructions']}"
+    )
     typer.echo(f"\n## Answer JSON schema\n{json.dumps(t['json_schema'])}\n\n## Data\n{t['data']}")
 
 
 @cli.command()
-def answer(task_id: str, answer_file: Path,
-           force: bool = typer.Option(False, "--force", help="Write even if quote pre-checks fail")) -> None:
+def answer(
+    task_id: str,
+    answer_file: Path,
+    force: bool = typer.Option(False, "--force", help="Write even if quote pre-checks fail"),
+) -> None:
     """Manual mode: pre-check an answer (quotes must be verbatim in the task's sources) and submit it."""
     from app.providers.llm.manual_provider import write_answer
 
@@ -173,39 +224,63 @@ def answer(task_id: str, answer_file: Path,
 
 @cli.command()
 def web(
-    host: str = typer.Option("127.0.0.1", help="Bind address. Leave on localhost unless WEB_AUTH_TOKEN is set."),
-    port: int = typer.Option(8000),
+    host: str | None = typer.Option(
+        None, help="Bind address (default WEB_HOST). Localhost unless WEB_AUTH_TOKEN and TLS are set."
+    ),
+    port: int | None = typer.Option(None, help="Port (default WEB_PORT)."),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (development only)"),
+    tls_certfile: Path | None = typer.Option(
+        None, "--tls-certfile", help="PEM certificate required for a public bind."
+    ),
+    tls_keyfile: Path | None = typer.Option(
+        None, "--tls-keyfile", help="PEM private key required for a public bind."
+    ),
 ) -> None:
     """Serve the operator console: every run, lead and piece of evidence, plus suppression and erasure."""
-    import uvicorn
+    from app.server import UnsafeBindError, serve
 
-    from app.config import get_settings
+    try:
+        serve(host, port, reload, tls_certfile, tls_keyfile)
+    except UnsafeBindError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(2) from exc
 
-    if host not in ("127.0.0.1", "localhost") and not get_settings().web_auth_token:
-        typer.echo("Refusing to bind beyond localhost without WEB_AUTH_TOKEN set: the console shows personal data.")
-        raise typer.Exit(2)
-    typer.echo(f"Console on http://{host}:{port}")
-    uvicorn.run("app.web.main:app", host=host, port=port, reload=reload, access_log=False,
-                proxy_headers=True, forwarded_allow_ips="127.0.0.1")
+
+@cli.command("feedback-export")
+def feedback_export(
+    out: Path = typer.Option(Path("evals/lead_feedback.jsonl"), help="Where to write the dataset"),
+) -> None:
+    """Write every rated lead, with the evidence it was delivered on, as one JSON object per line."""
+    from app.config.database import session_scope
+    from app.repositories import feedback_repository
+
+    with session_scope() as s:
+        rows = feedback_repository.export_rows(s)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("".join(json.dumps(row, default=str) + "\n" for row in rows))
+    typer.echo(f"{len(rows)} rated lead(s) written to {out}")
 
 
 @cli.command()
 def validate(job_file: Path) -> None:
     """Check a job YAML without spending anything."""
     spec = load_job(job_file)
-    typer.echo(f"OK: {spec.client.name}, {spec.count} leads in {spec.countries}, {len(spec.playbook.signals)} signals")
+    typer.echo(
+        f"OK: {spec.client.name}, {spec.count} leads in {spec.countries}, {len(spec.playbook.signals)} signals"
+    )
 
 
 @cli.command()
 def suppress(
     kind: str = typer.Argument(..., help="'domain' or 'email'"),
     value: str = typer.Argument(...),
-    reason: str = typer.Option(..., "--reason", help="Why this is suppressed (opt-out, erasure request, competitor...)"),
+    reason: str = typer.Option(
+        ..., "--reason", help="Why this is suppressed (opt-out, erasure request, competitor...)"
+    ),
 ) -> None:
     """Add a domain or email to the suppression list: never researched / looked up / delivered again."""
-    from app.db import session_scope
-    from app.pipeline import store
+    from app.config.database import session_scope
+    from app.repositories import lead_repository as store
 
     if kind not in ("domain", "email"):
         typer.echo("kind must be 'domain' or 'email'")
@@ -222,8 +297,8 @@ def erase_person(
 ) -> None:
     """Delete a decision-maker's stored contact record by email (UK GDPR / DPDP erasure) and suppress
     the email going forward, so it cannot be re-added by a later finder lookup or cache reuse."""
-    from app.db import session_scope
-    from app.pipeline import store
+    from app.config.database import session_scope
+    from app.repositories import lead_repository as store
 
     with session_scope() as s:
         n = store.erase_person_by_email(s, email, reason)

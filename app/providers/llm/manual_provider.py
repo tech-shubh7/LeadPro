@@ -5,6 +5,7 @@ for <id>.response.json. Responses are validated against the same Pydantic schema
 downstream (quote verification, date rules, gates) is identical to OpenAI mode. Answers are keyed by
 a hash of the request, so re-running the same job reuses them.
 """
+
 import asyncio
 import hashlib
 import json
@@ -15,16 +16,19 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from app.config import get_settings
-from app.core.cost import CostTracker
-from app.providers.llm.openai_provider import DATA_GUARD, LLMRefusal, wrap_data
+from app.config.settings import get_settings
+from app.exceptions.custom_exceptions import LLMRefusalError
+from app.providers.llm.openai_provider import DATA_GUARD, wrap_data
+from app.utils.cost_tracker import CostTracker
 
 T = TypeVar("T", bound=BaseModel)
 TASK_DIR = Path("work/llm_tasks")
 
 
 class ManualLLMProvider:
-    def __init__(self, cost: CostTracker, task_dir: Path = TASK_DIR, poll_s: float = 2.0, timeout_s: float = 4 * 3600):
+    def __init__(
+        self, cost: CostTracker, task_dir: Path = TASK_DIR, poll_s: float = 2.0, timeout_s: float = 4 * 3600
+    ):
         self.cost = cost
         self.task_dir = task_dir
         self.poll_s = poll_s
@@ -41,16 +45,28 @@ class ManualLLMProvider:
     def judge_model(self) -> str:
         return get_settings().llm_judge_model
 
-    async def parse(self, model: str, instructions: str, data: str, schema: type[T], effort: str = "low",
-                    max_output_tokens: int = 16000) -> T:
+    async def parse(
+        self,
+        model: str,
+        instructions: str,
+        data: str,
+        schema: type[T],
+        effort: str = "low",
+        max_output_tokens: int = 16000,
+    ) -> T:
         task_id = hashlib.sha256(f"{schema.__name__}\n{instructions}\n{data}".encode()).hexdigest()[:16]
         task_path = self.task_dir / f"{task_id}.task.json"
         resp_path = self.task_dir / f"{task_id}.response.json"
         err_path = self.task_dir / f"{task_id}.error.txt"
         task = {
-            "id": task_id, "step": schema.__name__, "role_model": model, "effort": effort,
-            "instructions": f"{instructions}\n\n{DATA_GUARD}", "json_schema": schema.model_json_schema(),
-            "data": wrap_data(data), "created_at": datetime.now(UTC).isoformat(),
+            "id": task_id,
+            "step": schema.__name__,
+            "role_model": model,
+            "effort": effort,
+            "instructions": f"{instructions}\n\n{DATA_GUARD}",
+            "json_schema": schema.model_json_schema(),
+            "data": wrap_data(data),
+            "created_at": datetime.now(UTC).isoformat(),
         }
         if not resp_path.exists() and not task_path.exists():
             task_path.write_text(json.dumps(task, indent=1))
@@ -73,10 +89,11 @@ class ManualLLMProvider:
                     return parsed
             await asyncio.sleep(self.poll_s)
             waited += self.poll_s
-        raise LLMRefusal(f"no response for manual task {task_id} within {self.timeout_s:.0f}s")
+        raise LLMRefusalError(f"no response for manual task {task_id} within {self.timeout_s:.0f}s")
 
 
 # ---- operator side: inspect and answer tasks (used by `leadpro task` / `leadpro answer`) ------
+
 
 def pending_tasks(task_dir: Path = TASK_DIR) -> list[Path]:
     return sorted(task_dir.glob("*.task.json"), key=lambda p: p.stat().st_mtime) if task_dir.exists() else []
@@ -85,12 +102,17 @@ def pending_tasks(task_dir: Path = TASK_DIR) -> list[Path]:
 def check_answer(task: dict, answer: dict) -> list[str]:
     """Pre-checks an extraction answer with the pipeline's own quote rules, so a bad quote is fixed now
     instead of being silently dropped later. (The pipeline re-verifies everything against full page text.)"""
-    from app.core.evidence_verify import phrase_near_quote, quote_in_text
+    from app.utils.evidence_verifier import phrase_near_quote, quote_in_text
 
     if task["step"] == "DraftOut":
-        from app.pipeline.drafts import MAX_BODY_WORDS
+        from app.services.draft_service import MAX_BODY_WORDS
+
         words = len(answer.get("body", "").split())
-        return [f"draft body is {words} words; the pipeline rejects more than {MAX_BODY_WORDS}"] if words > MAX_BODY_WORDS else []
+        return (
+            [f"draft body is {words} words; the pipeline rejects more than {MAX_BODY_WORDS}"]
+            if words > MAX_BODY_WORDS
+            else []
+        )
     if task["step"] != "ExtractOut":
         return []
     sources = dict(re.findall(r'<source url="([^"]+)">\n(.*?)\n</source>', task["data"], re.S))
@@ -102,8 +124,11 @@ def check_answer(task: dict, answer: dict) -> list[str]:
                 problems.append(f"{kind}: unknown source_url {item.get('source_url')}")
             elif not quote_in_text(item.get("quote", ""), text):
                 problems.append(f"{kind}: quote not found verbatim: {item.get('quote', '')[:80]}")
-            elif kind == "signals" and item.get("event_date_quote") and not phrase_near_quote(
-                    item["event_date_quote"], item["quote"], text):
+            elif (
+                kind == "signals"
+                and item.get("event_date_quote")
+                and not phrase_near_quote(item["event_date_quote"], item["quote"], text)
+            ):
                 problems.append(f"signals: event date phrase not near the quote: {item['event_date_quote']}")
             elif kind == "people" and item.get("last_name", "").lower() not in item.get("quote", "").lower():
                 problems.append(f"people: quote does not contain surname {item.get('last_name')}")

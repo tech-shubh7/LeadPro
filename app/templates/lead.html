@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ d.company.name or d.company.domain }} · LeadPro{% endblock %}
+{% block content %}
+{% set name = d.company.name or d.company.domain %}
+
+<nav class="crumbs">
+  <a href="/">Runs</a><span class="sep">/</span>
+  <a href="/jobs/{{ d.job.id }}">{{ d.job.client_name }}</a><span class="sep">/</span>
+  <span>{{ name }}</span>
+</nav>
+
+<div class="head">
+  <div class="who">
+    <span class="avatar lg {{ 'accent' if d.lead.lead_tier == 'signal' }}">{{ name | initials }}</span>
+    <div>
+      <h1>{{ name }}</h1>
+      <div class="meta">
+        {{ m.tier(d.lead.lead_tier) }}
+        {{ m.confidence(d.lead.confidence_tier, d.lead.signal_summary) }}
+        {% if d.lead.status == 'qualified' %}<span class="pill pill-ok">{{ m.icon('mail') }}Verified contact</span>
+        {% elif d.lead.status == 'qualified_no_contact' %}<span class="pill pill-warn">Good fit, no email found</span>{% endif %}
+        <span class="mono">{{ d.company.domain }}</span>
+      </div>
+    </div>
+  </div>
+  <span class="spacer"></span>
+  <div class="actions">
+    <a class="btn" href="https://{{ d.company.domain }}" rel="noreferrer noopener nofollow" target="_blank">{{ m.icon('globe') }}Visit site</a>
+  </div>
+</div>
+
+<div class="split">
+<div class="stack">
+
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('spark') }}Why this lead</h2></div>
+    <div class="card-body">
+      {% if d.lead.signal_summary %}<p class="b">{{ d.lead.signal_summary }}</p>{% endif %}
+      <p class="dim">{{ d.lead.why_summary or "—" }}</p>
+      {% if d.lead.outreach_angle %}
+      <div class="note note-ok">{{ m.icon('bolt') }}<div><b>Open with:</b> {{ d.lead.outreach_angle }}</div></div>
+      {% endif %}
+      {% if d.lead.risks %}
+      <div class="note note-warn">{{ m.icon('alert') }}<div><b>Watch out:</b> {{ d.lead.risks }}</div></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('bolt') }}Buying signs (with proof)</h2>
+      <span class="spacer"></span><span class="hint">Every quote re-found by code on the page fetched during the run</span>
+    </div>
+    <div class="card-body">
+    {% if d.signals %}
+    <ul class="ev">
+      {% for e in d.signals %}
+      <li>
+        <div class="ev-head">
+          <span class="pill pill-accent">{{ e.signal_type | title_case }}</span>
+          {% if e.intent %}<span class="pill {{ 'pill-bad' if e.intent in ('in_house_build', 'unrelated') else ('pill-warn' if e.intent == 'budget_only' else 'pill-ok') }}" title="{{ e.intent_reason or '' }}">{{ intent_labels.get(e.intent, e.intent) }}</span>{% endif %}
+          {% if e.source_class %}<span class="pill pill-outline" title="How far we trust where this came from">{{ e.source_class | title_case }} · {{ source_trust.get(e.source_class, 'low') }} trust</span>{% endif %}
+          {% if e.date_confidence in ('low', 'none') %}<span class="pill pill-warn" title="The date comes only from the web address, so it is weak on its own">Date uncertain</span>{% endif %}
+          {% set shown = e.event_date or e.evidence_date %}
+          {% if shown %}<span class="pill pill-outline">{{ m.icon('calendar') }}{{ shown | day }} · {{ shown | age_days }}</span>{% endif %}
+          {% if e.quote_verified %}<span class="pill pill-ok" title="quote re-found in the stored page text">{{ m.icon('check') }}Quote verified</span>{% endif %}
+          <span class="spacer"></span>
+          {{ m.ext(e.source_url) }}
+        </div>
+        <p class="ev-claim">{{ e.claim }}</p>
+        <blockquote>{{ e.quote }}</blockquote>
+        <div class="ev-foot">
+          {% if e.date_source %}<span>Dated from {{ e.date_source | date_source }}{% if e.date_precision %} ({{ e.date_precision }}){% endif %}</span>{% endif %}
+          {% if e.event_date and e.event_date_quote %}<span>Event stated as “{{ e.event_date_quote }}”</span>{% endif %}
+          {% if e.evidence_date and e.event_date and e.event_date != e.evidence_date %}<span>Source published {{ e.evidence_date | day }}</span>{% endif %}
+          {% if e.corroborating_urls %}<span>Also reported by {{ e.corroborating_urls | length }} other source(s)</span>{% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty"><div class="art">{{ m.icon('target') }}</div><h2>No dated signal found</h2>
+      <p>This company fits the profile but showed no public buying signal inside the window, so it sits on the ICP-only
+        sheet. No signal found is not proof there is no need.</p></div>
+    {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('user') }}People to contact</h2>
+      <span class="spacer"></span><span class="hint">Emails delivered only when confirmed deliverable and not catch-all</span>
+    </div>
+    {% if d.contacts %}
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Person</th><th>Email</th><th>Status</th><th>Named on</th></tr></thead>
+      <tbody>
+        {% for c in d.contacts %}
+        <tr>
+          <td class="person"><div class="who"><span class="avatar">{{ (c.first_name ~ ' ' ~ c.last_name) | initials }}</span>
+            <div><span class="cell-main nowrap">{{ c.first_name }} {{ c.last_name }}</span>
+              <div class="cell-sub">{{ c.job_title }}{% if c.buyer_role %} · {{ c.buyer_role | title_case }}{% endif %}</div></div></div></td>
+          <td class="mono small">{% if c.email %}{{ c.email }} <button class="btn btn-sm btn-ghost copy" type="button" data-copy-text="{{ c.email }}" aria-label="Copy email">{{ m.icon('copy') }}</button>{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td>{{ m.verdict(c) }}{% if c.email_verified_at %}<div class="cell-sub">{{ c.email_verified_at | when }}</div>{% endif %}</td>
+          <td class="small">{% if c.person_source_url %}{{ m.ext(c.person_source_url) }}{% else %}<span class="muted">—</span>{% endif %}</td>
+        </tr>
+        {% if c.person_source_quote %}
+        <tr class="sub"><td colspan="4"><blockquote>{{ c.person_source_quote | trunc(350) }}</blockquote></td></tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    <div class="card-body"><p class="muted">No decision-maker was named on any page we fetched.</p></div>
+    {% endif %}
+  </div>
+
+  {% set drafts = d.drafts_by_contact %}
+  {% if drafts %}
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('mail') }}Outreach drafts</h2>
+      <span class="spacer"></span><span class="hint">Opens with a dated signal above · code rejects invented facts</span>
+    </div>
+    <div class="card-body">
+      {% for c in d.contacts %}
+        {% set draft = drafts.get(c.id) %}
+        {% if draft %}
+        <article class="draft">
+          <div class="draft-head">
+            <b>To {{ c.first_name }} {{ c.last_name }}</b>
+            <span class="mono xs muted">{{ c.email }}</span>
+            <span class="spacer"></span>
+            {% if draft.evidence_ids %}<span class="muted xs">cites evidence {{ draft.evidence_ids | join(", ") }}</span>{% endif %}
+            <button class="btn btn-sm copy" type="button" data-copy="draft-{{ c.id }}">{{ m.icon('copy') }}Copy</button>
+          </div>
+          <div id="draft-{{ c.id }}"><div class="subj">{{ draft.subject }}</div>
+          <pre>{{ draft.body }}</pre></div>
+        </article>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if d.facts %}
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('building') }}Company facts</h2>
+      <span class="spacer"></span><span class="hint">{{ d.facts | length }} verified</span>
+    </div>
+    <div class="card-body">
+      <ul class="ev">
+        {% for e in d.facts %}
+        <li>
+          <div class="ev-head"><p class="ev-claim">{{ e.claim }}</p><span class="spacer"></span>{{ m.ext(e.source_url) }}</div>
+          <blockquote>{{ e.quote }}</blockquote>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<aside>
+  <form class="card" id="feedback" method="post" action="/leads/{{ d.lead.id }}/feedback" data-busy>
+    <div class="card-head"><h2>Is this a good lead?</h2></div>
+    <div class="card-body">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {% if feedback %}<div class="note note-ok">{{ m.icon('check') }}<div>You said: <b>{{ {'good': 'Good lead', 'wrong_company': 'Wrong company', 'wrong_intent': 'Wrong intent', 'wrong_contact': 'Wrong contact'}[feedback.verdict] }}</b>{% if feedback.note %} — “{{ feedback.note }}”{% endif %}. You can change it.</div></div>{% endif %}
+      <div class="verdicts">
+        {% for value, label, hint in [('good', 'Good lead', 'Right company, real need, right person'),
+                                      ('wrong_company', 'Wrong company', 'Not the kind of company we want'),
+                                      ('wrong_intent', 'Wrong intent', 'The buying sign is not a real need'),
+                                      ('wrong_contact', 'Wrong contact', 'Right company, wrong person')] %}
+        <label class="check verdict"><input type="radio" name="verdict" value="{{ value }}" {{ 'checked' if feedback and feedback.verdict == value }} required>
+          <span><span class="lbl">{{ label }}</span><span class="help">{{ hint }}</span></span></label>
+        {% endfor %}
+      </div>
+      <label class="field"><span class="lbl">Note <span class="muted small">(optional)</span></span>
+        <input type="text" name="note" value="{{ feedback.note if feedback and feedback.note else '' }}" maxlength="1000" placeholder="What made it good or wrong?"></label>
+    </div>
+    <div class="card-foot"><button type="submit" class="primary">Save verdict</button>
+      <span class="muted xs">Every verdict is kept with this lead's evidence, so we can measure and improve accuracy.</span></div>
+  </form>
+  <div class="card">
+    <div class="card-head"><h2>Match score</h2></div>
+    <div class="card-body scorecard">
+      {% if d.lead.total_score is not none %}
+      <div class="big"><b>{{ d.lead.total_score }}</b><span class="muted">/ 100</span></div>
+      <div class="meter total {{ m.w(d.lead.total_score, 100) }}"></div>
+      <div class="line"><span class="dim">Fit: looks like a buyer</span><span class="mono">{{ d.lead.fit_score }}/40</span><div class="meter fit {{ m.w(d.lead.fit_score, 40) }}"></div></div>
+      <div class="line"><span class="dim">Need: shows a buying sign</span><span class="mono">{{ d.lead.intent_score }}/40</span><div class="meter intent {{ m.w(d.lead.intent_score, 40) }}"></div></div>
+      <div class="line"><span class="dim">Timing: how recent</span><span class="mono">{{ d.lead.timing_score }}/20</span><div class="meter timing {{ m.w(d.lead.timing_score, 20) }}"></div></div>
+      {% else %}<p class="muted">Not scored.</p>{% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Company</h2></div>
+    <div class="card-body">
+      <dl class="facts">
+        <div><dt>Registered as</dt><dd>{{ d.company.legal_name or "—" }}</dd></div>
+        <div><dt>Registry</dt><dd>
+          {% if d.company.registry_id %}<span class="mono">{{ d.company.registry_id }}</span>
+            <div class="muted xs">{{ d.company.registry_status }}{% if d.company.registry_entity_type %} · {{ d.company.registry_entity_type }}{% endif %}{% if d.company.incorporated_on %} · since {{ d.company.incorporated_on | day }}{% endif %}</div>
+          {% else %}<span class="muted">No match</span>{% endif %}
+        </dd></div>
+        <div><dt>Phone</dt><dd class="mono">{{ d.company.company_phone or "—" }}</dd></div>
+        <div><dt>Proof it trades</dt><dd>{{ d.lead.alive_proofs | join(", ") | replace("_", " ") or "—" }}</dd></div>
+        <div><dt>Outreach</dt><dd>
+          {{ m.outreach(d.lead.outreach_allowed, d.lead.outreach_reason) }}
+          {% if d.lead.outreach_reason %}<div class="muted xs">{{ d.lead.outreach_reason }}</div>{% endif %}
+        </dd></div>
+      </dl>
+    </div>
+  </div>
+
+  {% if d.deliveries %}
+  <div class="card">
+    <div class="card-head"><h2>Delivered to {{ d.job.client_name }}</h2></div>
+    <div class="card-body">
+      <ul class="plain small muted">
+        {% for dl in d.deliveries %}<li>{{ m.icon('check') }} {{ dl.delivered_at | when }} · {{ 'person' if dl.contact_id else 'company' }} level</li>{% endfor %}
+      </ul>
+      <p class="xs faint">Never delivered to this client again.</p>
+    </div>
+  </div>
+  {% endif %}
+</aside>
+</div>
+{% endblock %}

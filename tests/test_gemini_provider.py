@@ -1,5 +1,6 @@
 """Gemini provider: an overloaded model falls back to the next one instead of losing the step.
 No network: the SDK client is a fake."""
+
 import asyncio
 from types import SimpleNamespace
 
@@ -7,9 +8,9 @@ import pytest
 from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
-from app.core.cost import CostTracker
+from app.exceptions.custom_exceptions import LLMRefusalError
 from app.providers.llm import gemini_provider as gp
-from app.providers.llm.openai_provider import LLMRefusal
+from app.utils.cost_tracker import CostTracker
 
 
 class Out(BaseModel):
@@ -17,7 +18,9 @@ class Out(BaseModel):
 
 
 def _busy(model):
-    return genai_errors.APIError(503, {"error": {"code": 503, "message": f"{model} busy", "status": "UNAVAILABLE"}})
+    return genai_errors.APIError(
+        503, {"error": {"code": 503, "message": f"{model} busy", "status": "UNAVAILABLE"}}
+    )
 
 
 class FakeModels:
@@ -28,8 +31,9 @@ class FakeModels:
         self.calls.append(model)
         if model in self.busy:
             raise _busy(model)
-        usage = SimpleNamespace(prompt_token_count=100, candidates_token_count=10, thoughts_token_count=0,
-                                total_token_count=110)
+        usage = SimpleNamespace(
+            prompt_token_count=100, candidates_token_count=10, thoughts_token_count=0, total_token_count=110
+        )
         return SimpleNamespace(parsed=Out(answer=model), text=None, usage_metadata=usage, candidates=[])
 
 
@@ -44,6 +48,7 @@ def _provider(busy: set[str]):
 def no_sleep(monkeypatch):
     async def instant(_):
         return None
+
     monkeypatch.setattr(gp.asyncio, "sleep", instant)
 
 
@@ -59,7 +64,7 @@ def test_an_overloaded_model_falls_back_to_the_next(monkeypatch):
 def test_every_model_busy_is_a_refusal(monkeypatch):
     provider, _ = _provider(busy={"gemini-3.8-flash", "gemini-3.7-flash"})
     monkeypatch.setattr(provider.settings, "gemini_fallback_models", ["gemini-3.7-flash"])
-    with pytest.raises(LLMRefusal, match="fallbacks are unavailable"):
+    with pytest.raises(LLMRefusalError, match="fallbacks are unavailable"):
         asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out))
     assert provider.cost.reserved_inr == 0
 
@@ -79,7 +84,8 @@ def test_a_model_that_never_answers_is_abandoned_for_the_next(monkeypatch):
     monkeypatch.setattr(gp, "CALL_TIMEOUT_S", 0.05)
     monkeypatch.setattr(provider.settings, "gemini_fallback_models", ["gemini-3.7-flash"])
     out = asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out))
-    assert out.answer == "gemini-3.7-flash" and models.calls.count("gemini-3.8-flash") == 1
+    assert out.answer == "gemini-3.7-flash"
+    assert models.calls.count("gemini-3.8-flash") == 1
 
 
 def test_a_model_that_failed_over_is_skipped_for_a_while(monkeypatch):
@@ -89,12 +95,21 @@ def test_a_model_that_failed_over_is_skipped_for_a_while(monkeypatch):
     asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out))
     models.calls.clear()
     out = asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out))
-    assert out.answer == "gemini-3.7-flash" and models.calls == ["gemini-3.7-flash"]  # no retries re-paid
+    assert out.answer == "gemini-3.7-flash"
+    assert models.calls == ["gemini-3.7-flash"]
 
 
 def _invalid(model):
-    return genai_errors.APIError(400, {"error": {"code": 400, "message": "Request contains an invalid argument.",
-                                                 "status": "INVALID_ARGUMENT"}})
+    return genai_errors.APIError(
+        400,
+        {
+            "error": {
+                "code": 400,
+                "message": "Request contains an invalid argument.",
+                "status": "INVALID_ARGUMENT",
+            }
+        },
+    )
 
 
 def test_a_model_that_cannot_disable_thinking_is_asked_again_with_its_default(monkeypatch):
@@ -113,7 +128,8 @@ def test_a_model_that_cannot_disable_thinking_is_asked_again_with_its_default(mo
 
     models.generate_content = lite_needs_thinking
     out = asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out, effort="low"))
-    assert out.answer == "gemini-3.5-flash-lite" and "gemini-3.5-flash-lite" in gp._MUST_THINK
+    assert out.answer == "gemini-3.5-flash-lite"
+    assert "gemini-3.5-flash-lite" in gp._MUST_THINK
 
 
 def test_a_fallback_that_refuses_the_request_hands_on_to_the_next(monkeypatch):
@@ -123,7 +139,9 @@ def test_a_fallback_that_refuses_the_request_hands_on_to_the_next(monkeypatch):
 
     async def broken(model, contents, config):
         if model == "gemini-x-broken":
-            raise genai_errors.APIError(400, {"error": {"code": 400, "message": "bad", "status": "FAILED_PRECONDITION"}})
+            raise genai_errors.APIError(
+                400, {"error": {"code": 400, "message": "bad", "status": "FAILED_PRECONDITION"}}
+            )
         return await real(model, contents, config)
 
     models.generate_content = broken
@@ -135,10 +153,12 @@ def test_the_primary_model_refusing_the_request_still_fails_loudly(monkeypatch):
     provider, models = _provider(busy=set())
 
     async def bad(model, contents, config):
-        raise genai_errors.APIError(400, {"error": {"code": 400, "message": "bad", "status": "FAILED_PRECONDITION"}})
+        raise genai_errors.APIError(
+            400, {"error": {"code": 400, "message": "bad", "status": "FAILED_PRECONDITION"}}
+        )
 
     models.generate_content = bad
-    with pytest.raises(LLMRefusal):
+    with pytest.raises(LLMRefusalError):
         asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out, effort="medium"))
 
 
@@ -148,6 +168,7 @@ def test_a_rate_limit_waits_as_long_as_the_provider_asks(monkeypatch):
 
     async def record(seconds):
         waits.append(seconds)
+
     monkeypatch.setattr(gp.asyncio, "sleep", record)
     provider, models = _provider(busy=set())
     real = models.generate_content
@@ -156,10 +177,19 @@ def test_a_rate_limit_waits_as_long_as_the_provider_asks(monkeypatch):
     async def quota_once(model, contents, config):
         state["n"] += 1
         if state["n"] == 1:
-            raise genai_errors.APIError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
-                                                        "message": "Quota exceeded. Please retry in 43.9s."}})
+            raise genai_errors.APIError(
+                429,
+                {
+                    "error": {
+                        "code": 429,
+                        "status": "RESOURCE_EXHAUSTED",
+                        "message": "Quota exceeded. Please retry in 43.9s.",
+                    }
+                },
+            )
         return await real(model, contents, config)
 
     models.generate_content = quota_once
     assert asyncio.run(provider.parse("gemini-3.8-flash", "i", "d", Out)).answer == "gemini-3.8-flash"
-    assert waits and 43.9 <= waits[0] <= gp.MAX_RETRY_WAIT_S
+    assert waits
+    assert 43.9 <= waits[0] <= gp.MAX_RETRY_WAIT_S

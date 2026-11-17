@@ -8,24 +8,26 @@ Two models, the same split the pipeline expects: a cheap one for high-volume ext
 a strong one for judging. Thinking is off for extraction (it is copying, not reasoning) and on for
 the judge steps.
 """
+
 import asyncio
-import logging
+import json
 import random
 import re
 import time
 
 import httpx
-
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 from pydantic import BaseModel, ValidationError
 
-from app.config import get_settings
-from app.core.cost import CostTracker
-from app.providers.llm.openai_provider import DATA_GUARD, LLMRefusal, T, wrap_data
+from app.config.settings import get_settings
+from app.exceptions.custom_exceptions import LLMRefusalError
+from app.providers.llm.openai_provider import DATA_GUARD, T, wrap_data
+from app.utils.cost_tracker import CostTracker
+from app.utils.logger import get_logger
 
-log = logging.getLogger("leadpro.gemini")
+logger = get_logger(__name__)
 
 # Thinking budget in tokens per effort level. 0 disables it; the judge steps get room to reason.
 THINKING_BUDGET = {"low": 0, "medium": 4096, "high": 8192}
@@ -36,6 +38,7 @@ _ALWAYS_THINKS = ("-pro",)
 RETRY_CODES = frozenset({429, 500, 502, 503, 504})
 ATTEMPTS = 4
 BASE_DELAY_S = 2.0
+REQUEST_OVERHEAD_TOKENS = 1024  # provider framing/tooling; deliberately pessimistic
 # Per call. The SDK sets no timeout, and an overloaded endpoint can hold a request open indefinitely: one
 # such call once froze a plan draft for minutes with nothing logged. A stalled model goes straight to the
 # next one in the fallback chain rather than being waited on again.
@@ -78,8 +81,8 @@ class GeminiProvider:
         self.cost = cost
         # v1beta: the current model generation is not served on v1, which answers 404 for all of them.
         self.client = client or genai.Client(
-            api_key=self.settings.gemini_api_key,
-            http_options=types.HttpOptions(api_version="v1beta"))
+            api_key=self.settings.gemini_api_key, http_options=types.HttpOptions(api_version="v1beta")
+        )
 
     @property
     def extract_model(self) -> str:
@@ -117,10 +120,14 @@ class GeminiProvider:
             attempt = 0
             while attempt < attempts:
                 try:
-                    resp = await asyncio.wait_for(self.client.aio.models.generate_content(
-                        model=current, contents=wrap_data(data), config=cfg), CALL_TIMEOUT_S)
+                    resp = await asyncio.wait_for(
+                        self.client.aio.models.generate_content(
+                            model=current, contents=wrap_data(data), config=cfg
+                        ),
+                        CALL_TIMEOUT_S,
+                    )
                     if current != model:
-                        log.warning("gemini %s was unavailable; %s answered instead", model, current)
+                        logger.warning("gemini %s was unavailable; %s answered instead", model, current)
                     _cooling.pop(current, None)
                     return resp, current
                 except genai_errors.APIError as exc:
@@ -131,45 +138,70 @@ class GeminiProvider:
                         # (gemini-3.5-flash-lite does). Ask again with the model's default thinking.
                         _MUST_THINK.add(current)
                         cfg = _without_thinking_off(cfg)
-                        log.warning("gemini %s cannot disable thinking; retrying with its default", current)
+                        logger.warning(
+                            "gemini %s cannot disable thinking; retrying with its default", current
+                        )
                         continue  # same attempt count: this was our request's shape, not an outage
                     if code not in RETRY_CODES and code != 404:
                         if current == model:
-                            raise LLMRefusal(f"gemini {current}: {exc}") from exc
+                            raise LLMRefusalError(f"gemini {current}: {exc}") from exc
                         # A fallback that cannot serve this request: try the next one, do not fail the step.
-                        log.warning("gemini fallback %s refused the request (%s); trying the next", current, code)
+                        logger.warning(
+                            "gemini fallback %s refused the request (%s); trying the next", current, code
+                        )
                         _cool(current)
                         break
                     if code == 404 or attempt == attempts - 1:
                         _cool(current)
                         break  # this model is gone or still overloaded: try the next one
-                    delay = BASE_DELAY_S * (2 ** attempt) + random.uniform(0, 1)
+                    delay = BASE_DELAY_S * (2**attempt) + random.uniform(0, 1)
                     if code == 429 and (asked := _retry_after(exc)):
                         # A per-minute quota says exactly when it resets ("retry in 43.9s"); retrying
                         # sooner just fails again (job 18 lost five agencies that way).
                         delay = min(max(delay, asked + random.uniform(0.5, 2)), MAX_RETRY_WAIT_S)
-                    log.warning("gemini %s returned %s, retrying in %.1fs (%d/%d)",
-                                current, code, delay, attempt + 1, attempts - 1)
+                    logger.warning(
+                        "gemini %s returned %s, retrying in %.1fs (%d/%d)",
+                        current,
+                        code,
+                        delay,
+                        attempt + 1,
+                        attempts - 1,
+                    )
                     await asyncio.sleep(delay)
                     attempt += 1
                 except (TimeoutError, httpx.TransportError) as exc:
                     last = exc  # stalled or dropped connection: do not wait on this model again
-                    log.warning("gemini %s: %s", current, type(exc).__name__)
+                    logger.warning("gemini %s: %s", current, type(exc).__name__)
                     _cool(current)
                     break
-        raise LLMRefusal(f"gemini {model} and its fallbacks are unavailable: {last}") from last
+        raise LLMRefusalError(f"gemini {model} and its fallbacks are unavailable: {last}") from last
 
-    async def parse(self, model: str, instructions: str, data: str, schema: type[T], effort: str = "low",
-                    max_output_tokens: int = 16000) -> T:
+    async def parse(
+        self,
+        model: str,
+        instructions: str,
+        data: str,
+        schema: type[T],
+        effort: str = "low",
+        max_output_tokens: int = 16000,
+    ) -> T:
         # Held against the cap while the call is in flight, so it must not undershoot what the call can
         # cost: price at the dearest model the call may fall back to, and count the thinking budget,
         # which is billed as output. An undershoot let a run end 10% over its cap.
         chain = [model, *self.settings.gemini_fallback_models]
         p_in = max(self.settings.price_for(m)[0] for m in chain)
         p_out = max(self.settings.price_for(m)[2] for m in chain)
-        out_tokens = 2000 + self._budget(model, effort)
-        estimate = ((len(data) / 4) * p_in + out_tokens * p_out) / 1_000_000 * self.settings.usd_to_inr
-        with self.cost.reserve(estimate):
+        # Reserve the maximum billable request, not an average-token estimate.
+        # Thinking tokens and visible output are both billable and may each reach
+        # their configured limits.
+        schema_bytes = json.dumps(schema.model_json_schema(), separators=(",", ":"))
+        input_tokens = (
+            len((instructions + "\n" + wrap_data(data) + DATA_GUARD + schema_bytes).encode("utf-8"))
+            + REQUEST_OVERHEAD_TOKENS
+        )
+        out_tokens = max_output_tokens + self._budget(model, effort)
+        estimate = (input_tokens * p_in + out_tokens * p_out) / 1_000_000 * self.settings.usd_to_inr
+        async with self.cost.hold(estimate):
             config = types.GenerateContentConfig(
                 system_instruction=f"{instructions}\n\n{DATA_GUARD}",
                 response_mime_type="application/json",
@@ -179,8 +211,12 @@ class GeminiProvider:
             )
             resp, answered = await self._generate_with_retry(model, data, config)
             if resp.usage_metadata:
-                self.cost.record("gemini", answered, resp.usage_metadata.total_token_count or 0,
-                                 self._price_inr(answered, resp.usage_metadata))
+                self.cost.record(
+                    "gemini",
+                    answered,
+                    resp.usage_metadata.total_token_count or 0,
+                    self._price_inr(answered, resp.usage_metadata),
+                )
         parsed = resp.parsed
         if isinstance(parsed, schema):
             return parsed
@@ -190,13 +226,19 @@ class GeminiProvider:
             try:
                 return schema.model_validate_json(resp.text)
             except ValidationError as exc:
-                raise LLMRefusal(f"gemini {model} returned JSON that does not match {schema.__name__}: {exc}") from exc
-        reason = getattr(getattr(resp, "candidates", [None])[0], "finish_reason", None) if resp.candidates else None
-        raise LLMRefusal(f"gemini {model} returned no output (finish_reason={reason})")
+                raise LLMRefusalError(
+                    f"gemini {model} returned JSON that does not match {schema.__name__}: {exc}"
+                ) from exc
+        reason = (
+            getattr(getattr(resp, "candidates", [None])[0], "finish_reason", None)
+            if resp.candidates
+            else None
+        )
+        raise LLMRefusalError(f"gemini {model} returned no output (finish_reason={reason})")
 
 
 def is_configured() -> bool:
     return bool(get_settings().gemini_api_key)
 
 
-__all__ = ["GeminiProvider", "is_configured", "BaseModel"]
+__all__ = ["BaseModel", "GeminiProvider", "is_configured"]

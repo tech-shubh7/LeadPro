@@ -1,4 +1,4 @@
-from app.core.evidence_verify import Claim, quote_in_text, verify_claims
+from app.utils.evidence_verifier import Claim, quote_in_text, verify_claims
 
 PAGE = "Acme Ltd is hiring 3  Warehouse Managers in Leeds — apply by 30 Nov. “We’re expanding fast,” said CEO Jane Roe."
 

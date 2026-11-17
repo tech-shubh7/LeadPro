@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Runs · LeadPro{% endblock %}
+{% block content %}
+
+<div class="head">
+  <div>
+    <div class="eyebrow">Workspace</div>
+    <h1>Runs</h1>
+    <div class="sub">Every lead carries a dated reason to reach out, the exact quote it came from, and an email we
+      confirmed is deliverable. Nothing is guessed or padded.</div>
+  </div>
+  <span class="spacer"></span>
+  <div class="actions"><a class="btn btn-primary btn-lg" href="/new">{{ m.icon('plus') }}New run</a></div>
+</div>
+
+<div class="stats">
+  {{ m.stat("Ready to contact", totals.qualified | num, "decision-maker with a verified email", lead=True, ico="check-circle") }}
+  {{ m.stat("Contact rate", totals.contact_rate | pct(0), "of companies that passed every check", ico="mail") }}
+  {{ m.stat("Cost per lead", totals.cost_per_lead | inr if totals.qualified else "—", (totals.cost_inr | inr) ~ " spent in total", ico="coin") }}
+  {{ m.stat("Companies researched", totals.researched | num, (totals.jobs | num) ~ " runs", ico="building") }}
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>All runs</h2>
+    {% if totals.running %}<span class="pill pill-accent pill-live"><i class="dot"></i>{{ totals.running }} in progress</span>{% endif %}
+    <span class="spacer"></span>
+    <form method="get" class="filters" role="search">
+      <label class="search"><span class="sr">Search runs</span>{{ m.icon('search') }}
+        <input type="search" name="q" value="{{ q }}" placeholder="Client or ask…"></label>
+      <select name="status" aria-label="Status">
+        <option value="">Any status</option>
+        {% for s in statuses %}<option value="{{ s }}" {{ 'selected' if s == status }}>{{ s | title_case }}</option>{% endfor %}
+      </select>
+      <button type="submit">Filter</button>
+      {% if q or status %}<a class="btn btn-ghost" href="/">Clear</a>{% endif %}
+    </form>
+  </div>
+
+  {% if jobs.items %}
+  <div class="scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Client</th><th class="hide-sm">Looking for</th><th>Status</th><th>Ready to contact</th>
+        <th class="n hide-sm">Other</th><th class="n">Cost</th><th class="n hide-sm">Updated</th><th><span class="sr">Open</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job, c in jobs.items %}
+      {% set href = ('/new/' ~ job.id) if job.status in ('researching_client', 'awaiting_icp_review') else ('/jobs/' ~ job.id) %}
+      <tr class="clickable" data-href="{{ href }}">
+        <td>
+          <div class="who">
+            <span class="avatar">{{ job.client_name | initials }}</span>
+            <div><a class="cell-main" href="{{ href }}">{{ job.client_name }}</a>
+              <div class="cell-sub mono">{{ job.client_website | host if job.client_website else job.client_key }}</div></div>
+          </div>
+        </td>
+        <td class="wrap small dim hide-sm">{{ job.ask | trunc(90) }}</td>
+        <td>{{ m.status(job.status) }}</td>
+        <td>
+          <div class="minibar" title="{{ c.qualified }} qualified of {{ job.requested_count }} asked for">
+            <b>{{ c.qualified }}<span class="muted"> / {{ job.requested_count }}</span></b>
+            <div class="track"><span class="{{ m.w([c.qualified, job.requested_count] | min, job.requested_count) }}"></span></div>
+          </div>
+        </td>
+        <td class="n small muted nowrap hide-sm" title="Good fit no sign · good fit no email · not a match">
+          {{ c.icp_only }} · {{ c.no_contact }} · {{ c.rejected }}</td>
+        <td class="n small">{{ job.cost_inr | inr }}</td>
+        <td class="n small muted nowrap hide-sm">{{ (job.finished_at or job.updated_at or job.created_at) | when }}</td>
+        <td class="n"><a class="btn btn-sm" href="{{ href }}">Open{{ m.icon('chev') }}</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {{ m.pager(jobs, request) }}
+  {% else %}
+  <div class="empty">
+    <div class="art">{{ m.icon('search' if q or status else 'spark') }}</div>
+    <h2>{{ "No runs match that filter" if q or status else "Find your first buyers" }}</h2>
+    <p>{{ "Try clearing the filter." if q or status else "Give us a client's website and who they want to reach. We draft the plan, you approve it, we bring back evidence-backed leads." }}</p>
+    {% if not q and not status %}<p><a class="btn btn-primary btn-lg" href="/new">{{ m.icon('plus') }}Start a run</a></p>{% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="cols-3 card-body">
+  <div class="feature">
+    <h3><span class="ico">{{ m.icon('quote') }}</span>A quote, not a summary</h3>
+    <p class="small muted">Every signal carries verbatim text that code re-found in the page fetched during the run.
+      If the quote is not there, the claim is dropped.</p>
+  </div>
+  <div class="feature">
+    <h3><span class="ico">{{ m.icon('calendar') }}</span>A date you can defend</h3>
+    <p class="small muted">Dates come from article metadata, a job-posting date or an official notice — never a page
+      footer — and must fall inside the freshness window.</p>
+  </div>
+  <div class="feature">
+    <h3><span class="ico">{{ m.icon('mail') }}</span>An email that exists</h3>
+    <p class="small muted">Delivered only when confirmed deliverable and not catch-all. Never pattern-guessed.
+      Companies without one are listed separately, not padded in.</p>
+  </div>
+</div>
+{% endblock %}

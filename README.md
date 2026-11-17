@@ -11,12 +11,52 @@ createdb -h localhost -U postgres leadpro && createdb -h localhost -U postgres l
 uv run alembic upgrade head
 ```
 
-API keys (`.env`): `SERPER_API_KEY`, `OPENAI_API_KEY`, `COMPANIES_HOUSE_API_KEY` (free), `GENERECT_API_KEY`.
+API keys (`.env`, every option is documented in `.env.example`): `SERPER_API_KEY`, `GEMINI_API_KEY` or
+`OPENAI_API_KEY`, `COMPANIES_HOUSE_API_KEY` (free), and at least one email finder: `GENERECT_API_KEY`,
+`HUNTER_API_KEY` (tried in `EMAIL_FINDER_ORDER`; the first verified address wins).
+
+Day-to-day commands are in the `justfile` (`just --list`):
+
+```bash
+just dev        # the console: python -m app.server  (http://127.0.0.1:8000)
+just test       # the test suite
+just lint       # ruff check + format check (what CI runs)
+just migrate    # apply migrations
+```
+
+## Project structure
+
+Layered design: requests flow `routes -> services -> repositories / providers`, and
+nothing flows back up.
+
+```
+app/
+  server.py            entry point (python -m app.server): binds, refuses unsafe public binds
+  main.py              FastAPI wiring only: lifespan, middleware, error handlers, routers
+  cli.py               `leadpro` CLI: scripted runs from a job YAML, doctor, compliance
+  config/              settings, database engine + session dependency, templates, constants
+  routes/              one router per screen (*_routes.py), thin: parse, call a service, render
+  middlewares/         request_guard composes csrf -> auth -> handler -> security_headers
+  exceptions/          AppError hierarchy + handlers that render every error as a page or JSON
+  services/            the pipeline, one step per module (*_service.py): intake, discovery, sources,
+                       research, extraction, scoring, contacts, drafts, export, run, run_manager
+  repositories/        database access: lead_repository (pipeline writes), console_repository (reads)
+  providers/           outside systems behind interfaces: llm/ (protocol + factory: openai, gemini,
+                       manual), email/ (EmailFinder + factory: generect, hunter), search/, registry/,
+                       jobs/, tenders/, web/ (page fetcher, SSRF-guarded)
+  compliance/          country packs: who may be researched or contacted, and proof a company is alive
+  models/              SQLAlchemy models, one table per module; enums
+  schemas/             Pydantic contracts (job spec)
+  utils/               small pure helpers: dates, normalise, evidence verifier, cost tracker, logger
+  migrations/          Alembic
+  templates/ static/   the server-rendered console
+tests/                 pytest, one file per area; HTTP is mocked, the database is a real Postgres
+```
 
 ## The product (web)
 
 ```bash
-uv run leadpro web                 # http://127.0.0.1:8000
+just dev                           # or: uv run leadpro web
 ```
 
 Three screens, in the order you use them.

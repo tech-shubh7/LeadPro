@@ -1,7 +1,11 @@
-from app.core.normalize import (
-    email_matches_person, extract_emails, extract_phones, is_role_email, normalize_domain,
-)
 from app.models.enums import PhoneSource, PhoneType
+from app.utils.normalize import (
+    email_matches_person,
+    extract_emails,
+    extract_phones,
+    is_role_email,
+    normalize_domain,
+)
 
 
 def test_normalize_domain():

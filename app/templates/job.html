@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ job.client_name }} · LeadPro{% endblock %}
+{% block content %}
+{% set stage_of = {'queued': 1, 'discovering': 1, 'researching': 2, 'scoring': 3, 'finding_contacts': 4, 'revalidating': 4,
+                   'done': 6, 'done_with_shortfall': 6} %}
+{% set stage = stage_of.get(job.status, 0) %}
+{% set found = [(job.progress or {}).get('candidates', 0) or 0, counts.qualified + counts.icp_only + counts.no_contact + counts.rejected] | max %}
+
+<nav class="crumbs"><a href="/">Runs</a><span class="sep">/</span><span>{{ job.client_name }}</span></nav>
+
+<div class="head">
+  <div class="who">
+    <span class="avatar lg">{{ job.client_name | initials }}</span>
+    <div>
+      <h1>{{ job.client_name }}</h1>
+      <div class="meta">
+        {{ m.status(job.status) }}
+        <span>{{ m.icon('globe') }}{{ countries.get(job.target_countries[0], job.target_countries[0]) }}</span>
+        <span>{{ m.icon('calendar') }}Buying signs from the last {{ job.freshness_days }} days</span>
+        <span>{{ m.icon('clock') }}Created {{ job.created_at | when }}</span>
+      </div>
+    </div>
+  </div>
+  <span class="spacer"></span>
+  <div class="actions">
+    {% for f in files %}<a class="file" href="/jobs/{{ job.id }}/files/{{ f.name }}">{{ m.icon('download') }}{{ f | file_label }}</a>{% endfor %}
+  </div>
+</div>
+
+<p class="dim small">“{{ job.ask | trunc(220) }}”</p>
+
+{% if job.error %}
+<div class="note note-bad" role="alert">{{ m.icon('alert') }}<div>
+  <b>This run stopped early.</b> Everything it found before stopping is saved below.
+  {% if 'Interrupted' in job.error %}{{ job.error }}{% else %}
+  <details><summary>Technical detail</summary><pre>{{ job.error | trunc(3000) }}</pre></details>{% endif %}
+</div></div>
+{% endif %}
+
+{% if not running and (job.progress or {}).get('stopped_by_cap') %}
+<form class="note note-warn continue" method="post" action="/jobs/{{ job.id }}/continue" data-busy>
+  {{ m.icon('coin') }}<div>
+    <b>Budget reached at {{ job.cost_inr | inr }} of {{ job.cost_cap_inr | inr }}.</b>
+    {% if job.run_spec %}Continue with a bigger budget: what was already researched is reused for free, so only
+    new companies are paid for.
+    <span class="row">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label class="sr" for="newcap">New budget (₹)</label>
+      <input id="newcap" type="number" name="cost_cap_inr" min="{{ (job.cost_cap_inr + 1) | round | int }}" value="{{ (job.cost_cap_inr * 2) | round | int }}" required>
+      <button type="submit" class="primary btn-sm">{{ m.icon('bolt') }}Continue with this budget</button>
+    </span>
+    {% else %}This run was started outside the console, so start a new run with a higher budget.{% endif %}
+  </div>
+</form>
+{% endif %}
+
+<div class="card runcard" id="live" data-job="{{ job.id }}" data-running="{{ 1 if running else 0 }}" data-target="{{ job.requested_count }}">
+  <div class="card-body">
+    <div class="row">
+      <span class="headline" data-live="headline">
+        {% if running %}Searching… {{ counts.qualified }} ready to contact so far{% else %}{{ counts.qualified }} of {{ job.requested_count }} leads ready to contact{% endif %}
+      </span>
+      <span class="spacer"></span>
+      <span class="muted small">{{ m.icon('coin') }} <span data-live="cost">{{ job.cost_inr | inr }}</span> of {{ job.cost_cap_inr | inr }} cap</span>
+    </div>
+    <div class="track {{ 'striped' if running }}">
+      <span class="{{ m.w([counts.qualified, job.requested_count] | min, job.requested_count) }}" data-live="bar"></span>
+    </div>
+    {% if job.status != 'failed' %}
+    <ol class="stepper" data-live="stepper">
+      {% for name in ['Plan approved', 'Find companies', 'Check each one', 'Score', 'Find emails', 'Done'] %}
+      {% set i = loop.index0 %}
+      <li data-step="{{ i }}" class="{{ 'done' if i < stage or stage == 6 else ('now' ~ (' live' if running else '') if i == stage else '') }}">
+        <span class="bub"><span class="num">{{ loop.index }}</span><svg class="i tick" aria-hidden="true"><use href="#i-check"/></svg></span>{{ name }}
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+  </div>
+  <div class="stats-flat">
+    <div class="lead"><div class="label"><span class="key k-q"></span>Ready to contact</div><div class="value" data-live="qualified">{{ counts.qualified }}</div></div>
+    <div><div class="label"><span class="key k-n"></span>Good fit, no email found</div><div class="value" data-live="no_contact">{{ counts.no_contact }}</div></div>
+    <div><div class="label"><span class="key k-i"></span>Good fit, no buying sign</div><div class="value" data-live="icp_only">{{ counts.icp_only }}</div></div>
+    <div><div class="label"><span class="key k-r"></span>Not a match</div><div class="value" data-live="rejected">{{ counts.rejected }}</div></div>
+    <div><div class="label">Companies checked</div><div class="value" data-live="candidates">{{ found }}</div></div>
+  </div>
+</div>
+
+{% if feedback %}
+<p class="small dim feedback-line">{{ m.icon('check-circle') }} Your verdicts:
+  {% for verdict, n in feedback.items() %}<b>{{ n }}</b> {{ {'good': 'good', 'wrong_company': 'wrong company', 'wrong_intent': 'wrong intent', 'wrong_contact': 'wrong contact'}[verdict] }}{{ '' if loop.last else ' · ' }}{% endfor %}</p>
+{% endif %}
+<nav class="tabs" aria-label="Sections">
+  <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='leads') }}" class="{{ 'on' if tab == 'leads' }}">Leads <span class="count">{{ counts.qualified + counts.icp_only + counts.no_contact }}</span></a>
+  <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='rejected') }}" class="{{ 'on' if tab == 'rejected' }}">Not a match <span class="count">{{ counts.rejected }}</span></a>
+  <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='method') }}" class="{{ 'on' if tab == 'method' }}">Plan &amp; spend</a>
+</nav>
+
+{% if tab == 'leads' %}
+<div class="card">
+  <div class="card-head">
+    <form method="get" class="filters" role="search">
+      <input type="hidden" name="tab" value="leads">
+      <label class="search"><span class="sr">Search leads</span>{{ m.icon('search') }}
+        <input type="search" name="q" value="{{ q }}" placeholder="Company or domain…"></label>
+      <select name="tier" aria-label="Tier">
+        <option value="">Any tier</option>
+        <option value="signal" {{ 'selected' if tier == 'signal' }}>Buying sign</option>
+        <option value="icp_only" {{ 'selected' if tier == 'icp_only' }}>Good fit, no sign</option>
+      </select>
+      <select name="contact" aria-label="Contact">
+        <option value="">Any contact</option>
+        <option value="yes" {{ 'selected' if contact == 'yes' }}>Verified email</option>
+        <option value="no" {{ 'selected' if contact == 'no' }}>No email found</option>
+      </select>
+      <button type="submit">Filter</button>
+      {% if q or tier or contact %}<a class="btn btn-ghost" href="/jobs/{{ job.id }}">Clear</a>{% endif %}
+    </form>
+    <span class="spacer"></span>
+    <span class="hint">Match score = Fit 40 + Need 40 + Timing 20</span>
+  </div>
+
+  {% if leads.items %}
+  <div class="scroll">
+  <table>
+    <thead>
+      <tr><th class="n">#</th><th>Company</th><th>Match</th><th>Latest buying sign</th><th>Person to contact</th><th>Can we email?</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for r in leads.items %}
+      <tr class="clickable" data-href="/leads/{{ r.lead.id }}">
+        <td class="n small muted">{{ r.lead.rank or (leads.first + loop.index0) }}</td>
+        <td>
+          <div class="who">
+            <span class="avatar {{ 'accent' if r.lead.lead_tier == 'signal' }}">{{ (r.company.name or r.company.domain) | initials }}</span>
+            <div>
+              <a class="cell-main" href="/leads/{{ r.lead.id }}">{{ r.company.name or r.company.domain }}</a>
+              {% if rated.get(r.lead.id) %}<span class="pill {{ 'pill-ok' if rated[r.lead.id] == 'good' else 'pill-bad' }}">{{ {'good': 'Good', 'wrong_company': 'Wrong company', 'wrong_intent': 'Wrong intent', 'wrong_contact': 'Wrong contact'}[rated[r.lead.id]] }}</span>{% endif %}
+              <div class="cell-sub"><span class="mono">{{ r.company.domain }}</span>
+                {% if r.company.registry_id %} · <span title="Company registry match">{{ m.icon('check') }}{{ r.company.registry_status or 'registered' }}</span>{% endif %}</div>
+            </div>
+          </div>
+        </td>
+        <td>{{ m.score(r.lead) }}{% if r.lead.confidence_tier %}<div class="cell-sub">{{ m.confidence(r.lead.confidence_tier, r.lead.signal_summary) }}</div>{% endif %}</td>
+        <td class="small">
+          {% if r.latest_signal %}<div class="row">{{ m.tier(r.lead.lead_tier) }}<span class="muted xs">×{{ r.signals }}</span></div>
+            <div class="cell-sub">{{ r.latest_signal | day }} · {{ r.latest_signal | age_days }}</div>
+          {% else %}{{ m.tier(r.lead.lead_tier) }}{% endif %}
+        </td>
+        <td class="small">
+          {% if r.verified %}
+            {% for c in r.verified[:2] %}
+            <div class="row nowrap">{{ m.icon('check-circle') }}<span><b>{{ c.first_name }} {{ c.last_name }}</b><div class="cell-sub">{{ c.job_title | trunc(34) }}</div></span></div>
+            {% endfor %}
+            {% if r.verified | length > 2 %}<div class="cell-sub">+{{ r.verified | length - 2 }} more</div>{% endif %}
+          {% elif r.contacts %}<span class="muted">{{ r.contacts | length }} named, none verified</span>
+          {% else %}<span class="muted">None named</span>{% endif %}
+        </td>
+        <td>
+          {{ m.outreach(r.lead.outreach_allowed, r.lead.outreach_reason) }}
+        </td>
+        <td class="n"><a class="btn btn-sm" href="/leads/{{ r.lead.id }}">See why{{ m.icon('chev') }}</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {{ m.pager(leads, request) }}
+  {% else %}
+  <div class="empty">
+    <div class="art">{% if running %}<span class="spinner lg"></span>{% else %}{{ m.icon('search' if (q or tier or contact) else 'funnel') }}{% endif %}</div>
+    <h2>{{ "Nothing matches that filter" if (q or tier or contact) else ("Still looking…" if running else "No leads passed every check") }}</h2>
+    <p>{{ "Try clearing it." if (q or tier or contact) else ("Leads appear here the moment each one is verified." if running else "We would rather return nothing than pad the list. The “Not a match” tab shows exactly why each company was turned down.") }}</p>
+  </div>
+  {% endif %}
+</div>
+
+{% elif tab == 'rejected' %}
+<div class="grid">
+<div class="card">
+  <div class="card-head"><h2>{{ m.icon('funnel') }}Funnel</h2>
+    <span class="spacer"></span><span class="hint">The list is never padded to hit a number</span>
+  </div>
+  <div class="card-body funnel">
+    {% for label, n, k in [('Checked', found, ''), ('Not a match', counts.rejected, 'k-r'), ('Good fit, no email', counts.no_contact, 'k-n'), ('Good fit, no sign', counts.icp_only, 'k-i'), ('Ready to contact', counts.qualified, '')] %}
+    <div class="frow"><span class="dim">{{ label }}</span><div class="meter funnel {{ k }} {{ m.w(n, found) }}"></div><span class="n">{{ n }}</span></div>
+    {% endfor %}
+  </div>
+</div>
+<div class="card">
+  <div class="card-head"><h2>Why companies were not a match</h2></div>
+  <div class="card-body funnel">
+    {% set top = (reasons | map(attribute=1) | max) if reasons else 1 %}
+    {% for reason, n in reasons %}
+    <div class="frow wide"><span class="dim small" title="{{ reason }}">{{ reason | trunc(60) }}</span><div class="meter funnel k-r {{ m.w(n, top) }}"></div><span class="n">{{ n }}</span></div>
+    {% endfor %}
+    {% if not reasons %}<p class="muted">Nothing was dropped.</p>{% endif %}
+  </div>
+  {% if rejected and rejected.items %}
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Company</th><th class="n">Score</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for lead, company in rejected.items %}
+      <tr><td class="mono small">{{ company.domain }}</td>
+        <td class="n small">{{ lead.total_score if lead.total_score is not none else "—" }}</td>
+        <td class="small wrap dim">{{ lead.reject_reason | trunc(200) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {{ m.pager(rejected, request) }}
+  {% endif %}
+</div>
+</div>
+
+{% else %}
+<div class="cols">
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('target') }}The plan it ran</h2></div>
+    <div class="card-body">
+      <dl class="facts">
+        <div><dt>Industries</dt><dd>{{ plan.icp.get('industries', []) | join(', ') or '—' }}</dd></div>
+        <div><dt>Where</dt><dd>{{ plan.icp.get('geographies', []) | join(', ') or '—' }}</dd></div>
+        <div><dt>Size</dt><dd>{{ plan.icp.get('size_band') or '—' }}</dd></div>
+        <div><dt>Business model</dt><dd>{{ plan.icp.get('business_model') or '—' }}</dd></div>
+        <div><dt>Buyer titles</dt><dd>{{ plan.buyer_titles | join(', ') or '—' }}</dd></div>
+      </dl>
+      <div class="eyebrow">Buying signs searched for</div>
+      <ul class="plain small">
+        {% for s in plan.signals %}
+        <li><div class="row"><b>{{ s.type | title_case }}</b><span class="pill">{{ s.strength | title_case }}</span></div>
+          <div class="muted xs">{{ s.description }}</div></li>
+        {% endfor %}
+        {% if not plan.signals %}<li class="muted">—</li>{% endif %}
+      </ul>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('coin') }}What it cost</h2>
+      <span class="spacer"></span><span class="b">{{ job.cost_inr | inr }}</span></div>
+    {% if costs %}
+    <table>
+      <thead><tr><th>Provider · operation</th><th class="n">Calls</th><th class="n">Cost</th></tr></thead>
+      <tbody>
+        {% for name, calls, amount in costs %}
+        <tr><td class="small">{{ name }}</td><td class="n small">{{ calls }}</td><td class="n small">{{ amount | inr }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="card-foot muted small">Against a {{ job.cost_cap_inr | inr }} cap
+      {%- if counts.qualified %} · {{ (job.cost_inr / counts.qualified) | inr }} per qualified lead{% endif %}.</div>
+    {% else %}
+    <div class="card-body"><p class="muted">No paid calls recorded.</p></div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

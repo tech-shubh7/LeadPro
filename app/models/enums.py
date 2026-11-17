@@ -1,4 +1,5 @@
 """Every status string used in the app is defined here once."""
+
 from enum import StrEnum
 
 
@@ -43,7 +44,9 @@ class DateSource(StrEnum):
     JSON_LD = "json_ld"
     URL_PATH = "url_path"
     HTML_MARKUP = "html_markup"  # htmldate, markup only (time/meta tags), article pages only
-    OFFICIAL_NOTICE = "official_notice"  # publication date in a government open-data record (e.g. Contracts Finder)
+    OFFICIAL_NOTICE = (
+        "official_notice"  # publication date in a government open-data record (e.g. Contracts Finder)
+    )
     DOCUMENT_META = "document_meta"  # creation date embedded in a published document (PDF RFP / tender brief)
 
 
@@ -54,6 +57,7 @@ class DatePrecision(StrEnum):
 
 class EmailVerdict(StrEnum):
     """Our normalized verdict; provider-specific statuses map onto this."""
+
     VALID = "valid"
     INVALID = "invalid"
     CATCH_ALL = "catch_all"

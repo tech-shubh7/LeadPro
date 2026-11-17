@@ -1,12 +1,19 @@
 from datetime import date, datetime
 
-from app.countries import RegistryRecord, get_pack
+from app.compliance import RegistryRecord, get_pack
 from app.models.enums import AliveProof
 
 
 def _record(entity_type="ltd", status="active"):
-    return RegistryRecord("companies_house", "01234567", "ACME LTD", entity_type, status,
-                          date(2015, 3, 1), datetime(2026, 10, 30))
+    return RegistryRecord(
+        "companies_house",
+        "01234567",
+        "ACME LTD",
+        entity_type,
+        status,
+        date(2015, 3, 1),
+        datetime(2026, 10, 30),
+    )
 
 
 def test_uk_active_ltd_allowed():
@@ -15,7 +22,8 @@ def test_uk_active_ltd_allowed():
 
 def test_uk_no_registry_match_blocked_as_possible_sole_trader():
     d = get_pack("gb").outreach_decision(None)
-    assert not d.allowed and "sole trader" in d.reason
+    assert not d.allowed
+    assert "sole trader" in d.reason
 
 
 def test_uk_limited_partnership_and_dissolved_blocked():
@@ -27,7 +35,9 @@ def test_uk_limited_partnership_and_dissolved_blocked():
 def test_uk_alive_rules():
     pack = get_pack("GB")
     assert pack.is_alive({AliveProof.REGISTRY_ACTIVE, AliveProof.WEBSITE_LIVE})
-    assert pack.is_alive({AliveProof.WEBSITE_LIVE, AliveProof.RECENT_DATED_SIGNAL})  # brand != registered name
+    assert pack.is_alive(
+        {AliveProof.WEBSITE_LIVE, AliveProof.RECENT_DATED_SIGNAL}
+    )  # brand != registered name
     assert not pack.is_alive({AliveProof.WEBSITE_LIVE})
     assert not pack.is_alive({AliveProof.REGISTRY_ACTIVE, AliveProof.RECENT_DATED_SIGNAL})
 

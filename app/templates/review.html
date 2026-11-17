@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Check the plan · LeadPro{% endblock %}
+{% block content %}
+{% set country_name = countries.get(job.target_countries[0], job.target_countries[0]) %}
+{% set based = plan.profile.country %}
+{{ m.steps(2) }}
+
+<div class="head">
+  <div>
+    <h1>Check the plan, then start</h1>
+    <div class="sub">Here is what we understood and how we will search. Nothing is spent until you press
+      <b>Start research</b>.</div>
+  </div>
+</div>
+
+{% if not plan.generated %}
+  <div class="note note-warn" role="alert">{{ m.icon('alert') }}<div>
+    <b>This is a generic plan, not one tailored to {{ plan.client_name }}.</b>
+    {% if 'drafting failed' in (plan.note or '') %}The AI model was too busy to answer just now. Drafting again usually works within a minute.{% else %}{{ plan.note }}{% endif %}
+    <form method="post" action="/new/{{ job.id }}/redraft" class="row" data-busy>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="btn-sm">{{ m.icon('spark') }}Draft it again</button>
+    </form>
+  </div></div>
+{% elif plan.note %}
+  <div class="note note-warn">{{ m.icon('info') }}<div>{{ plan.note }}</div></div>
+{% endif %}
+
+<form method="post" action="/new/{{ job.id }}/start" data-busy>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+
+<div class="split">
+<div class="stack">
+
+<div class="card">
+  <div class="card-head"><h2><span class="qnum">1</span>Who is {{ plan.client_name }}?</h2></div>
+  <div class="card-body understood">
+    <span class="avatar lg accent">{{ plan.client_name | initials }}</span>
+    <div>
+      <p class="dim">{{ plan.client_summary or "We could not read the website, so we only know what you typed." }}</p>
+      <dl class="facts">
+        <div><dt>Based in</dt><dd>
+          {% if based %}<b>{{ countries.get(based, based) }}</b><div class="muted xs">How we know: {{ plan.profile.country_evidence }}</div>
+          {% else %}<span class="muted">Not stated on its website</span>{% endif %}</dd></div>
+        <div><dt>Public-sector work</dt><dd>
+          {% if plan.profile.public_sector_evidence %}<b>Yes</b><div class="muted xs">Its site says: “{{ plan.profile.public_sector_evidence | trunc(120) }}”</div>
+          {% else %}<span class="muted">None shown on its website</span>{% endif %}</dd></div>
+        {% if plan.sells_how %}<div><dt>Wins work as</dt><dd>{{ plan.sells_how }}</dd></div>{% endif %}
+      </dl>
+      {% if plan.pages_read %}<p class="muted xs">We read {{ plan.pages_read | length }} page{{ 's' if plan.pages_read | length != 1 }} of its website.</p>{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2><span class="qnum">2</span>Who are we looking for?</h2></div>
+  <div class="card-body">
+    <p class="lede">{{ plan.ask }}</p>
+    <dl class="facts">
+      {% if plan.icp.get('industries') %}<div><dt>Kind of company</dt><dd>{{ plan.icp.get('industries') | join(', ') }}</dd></div>{% endif %}
+      {% if plan.icp.get('size_band') %}<div><dt>Size</dt><dd>{{ plan.icp.get('size_band') }}</dd></div>{% endif %}
+      <div><dt>In</dt><dd>{{ country_name }}</dd></div>
+      {% if plan.buyer_titles %}<div><dt>Person to reach</dt><dd>{{ plan.buyer_titles[:4] | join(', ') }}</dd></div>{% endif %}
+    </dl>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2><span class="qnum">3</span>Where will we look, and why?</h2></div>
+  <div class="card-body">
+    {% if plan.where_to_look %}<p class="lede">{{ plan.where_to_look }}</p>{% endif %}
+    <div class="eyebrow">Buying signs we will search for, strongest first</div>
+    <ul class="ladder">
+      {% for s in plan.signals %}
+      <li>{{ m.strength(s.strength) }}<div><b>{{ s.type | title_case }}</b><div class="muted small">{{ s.description }}</div></div></li>
+      {% endfor %}
+      {% if not plan.signals %}<li><span class="pill pill-bad">None</span><div class="muted small">No buying sign left to search for. Open <em>Edit the details</em> and add one.</div></li>{% endif %}
+    </ul>
+    {% if plan.sources %}
+    <div class="eyebrow">Also checking</div>
+    <ul class="plain">
+      {% for src in plan.sources %}
+      <li class="channel">{{ m.icon({'ats_jobs': 'layers', 'contracts_awards': 'shield', 'agent_browse': 'globe'}.get(src.type, 'search')) }}
+        <div>
+          {% if src.type == 'ats_jobs' %}<b>Company job boards</b> <span class="muted small">companies hiring {{ src.role_keywords[:3] | join(', ') }}{% if src.locations %} in {{ src.locations[:2] | join(', ') }}{% endif %}</span>
+          {% elif src.type == 'contracts_awards' %}<b>Winners of UK public contracts</b> <span class="muted small">({{ src.keywords[:3] | join(', ') }}): they now need capacity</span>
+          {% elif src.type == 'agent_browse' %}<b>A list page, read by our browser agent</b> <a class="src" href="{{ src.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ src.url | host }}{{ m.icon('external') }}</a>
+            <div class="muted small">{{ src.goal }}</div>
+          {% endif %}
+          {% if src.why %}<div class="muted xs">Why: {{ src.why }}</div>{% endif %}
+        </div></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  <div class="card-foot small muted">For every company found, we read its own pages, check every quote word for word, make sure the
+    buying sign is recent, find the right person, and only deliver an email that is verified.</div>
+</div>
+
+{% if plan.exclusions %}
+<div class="card">
+  <div class="card-head"><h2><span class="qnum">4</span>What we are deliberately skipping</h2></div>
+  <div class="card-body">
+    <ul class="plain">
+      {% for e in plan.exclusions %}<li class="channel">{{ m.icon('ban') }}<div><b>{{ e.what }}</b><div class="muted small">{{ e.why }}</div></div></li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
+
+<details class="card adjust">
+  <summary>{{ m.icon('chev', 'chev') }}Edit the details <span class="muted small">(optional: only if we got something wrong)</span></summary>
+  <div class="card-body">
+    <div class="inline">
+      <label class="field"><span class="lbl">Who to find</span>
+        <input type="text" name="ask" value="{{ plan.ask }}"></label>
+      <label class="field"><span class="lbl">What the client sells</span>
+        <input type="text" name="offer" value="{{ plan.offer }}"></label>
+    </div>
+    <div class="inline">
+      <label class="field"><span class="lbl">Industries</span>
+        <input type="text" name="industries" value="{{ plan.icp.get('industries', []) | join(', ') }}"></label>
+      <label class="field"><span class="lbl">Where</span>
+        <input type="text" name="geographies" value="{{ plan.icp.get('geographies', []) | join(', ') }}"></label>
+      <label class="field"><span class="lbl">Size</span>
+        <input type="text" name="size_band" value="{{ plan.icp.get('size_band', '') }}"></label>
+      <label class="field"><span class="lbl">Business model</span>
+        <input type="text" name="business_model" value="{{ plan.icp.get('business_model', '') }}"></label>
+    </div>
+    <label class="field"><span class="lbl">Buyer titles</span><span class="help">Comma separated.</span>
+      <input type="text" name="buyer_titles" value="{{ plan.buyer_titles | join(', ') }}"></label>
+
+    <div class="eyebrow">Signals</div>
+    <p class="muted small">Clear a signal's name to drop it. A signal with no search query is ignored.</p>
+    {% for s in plan.signals %}
+    <div class="signal-card">
+      <div class="inline">
+        <label class="field"><span class="lbl">Name</span>
+          <input type="text" name="signal_type" value="{{ s.type }}"></label>
+        <label class="field"><span class="lbl">Strength</span>
+          <select name="signal_strength">
+            {% for level in strengths %}<option value="{{ level }}" {{ 'selected' if s.strength == level }}>{{ level | title_case }}</option>{% endfor %}
+          </select></label>
+        <label class="field"><span class="lbl">Search</span>
+          <select name="signal_kind">
+            <option value="search" {{ 'selected' if s.kind != 'news' }}>Web</option>
+            <option value="news" {{ 'selected' if s.kind == 'news' }}>News</option>
+          </select></label>
+      </div>
+      <label class="field"><span class="lbl">What it means</span>
+        <input type="text" name="signal_description" value="{{ s.description }}"></label>
+      <label class="field"><span class="lbl">Search queries, one per line</span>
+        <textarea name="signal_queries">{{ s.queries | join('\n') }}</textarea></label>
+    </div>
+    {% endfor %}
+    {% if not plan.signals %}
+    <div class="signal-card">
+      <div class="inline">
+        <label class="field"><span class="lbl">Name</span><input type="text" name="signal_type" value="asking_for_proposals"></label>
+        <label class="field"><span class="lbl">Strength</span>
+          <select name="signal_strength">{% for level in strengths %}<option value="{{ level }}" {{ 'selected' if level == 'very_high' }}>{{ level | title_case }}</option>{% endfor %}</select></label>
+        <label class="field"><span class="lbl">Search</span>
+          <select name="signal_kind"><option value="search">Web</option><option value="news">News</option></select></label>
+      </div>
+      <label class="field"><span class="lbl">What it means</span><input type="text" name="signal_description" value=""></label>
+      <label class="field"><span class="lbl">Search queries, one per line</span><textarea name="signal_queries"></textarea></label>
+    </div>
+    {% endif %}
+
+    <div class="inline">
+      <label class="field"><span class="lbl">Rules a company out</span>
+        <textarea name="disqualifiers">{{ plan.icp.get('disqualifiers', []) | join('\n') }}</textarea></label>
+      <label class="field"><span class="lbl">Evidence they are not a buyer</span>
+        <textarea name="negative">{{ plan.negative | join('\n') }}</textarea></label>
+    </div>
+    <label class="field"><span class="lbl">Why pick this client</span><span class="help">One checkable claim per line, used in drafts.</span>
+      <textarea name="why_choose">{{ plan.why_choose | join('\n') }}</textarea></label>
+    <label class="field"><span class="lbl">Why this kind of company buys</span><span class="help">One per line.</span>
+      <textarea name="why_they_buy">{{ plan.icp.get('why_they_buy', []) | join('\n') }}</textarea></label>
+  </div>
+</details>
+
+</div>
+
+<aside>
+  <div class="card">
+    <div class="card-head"><h2>Settings</h2></div>
+    <div class="card-body">
+      <label class="field"><span class="lbl">How many leads</span>
+        <input type="number" name="count" min="1" max="500" value="{{ plan.count }}"></label>
+      <label class="field"><span class="lbl">Buying sign must be newer than (days)</span>
+        <input type="number" name="freshness_days" min="1" max="365" value="{{ plan.freshness_days }}"></label>
+      <label class="field"><span class="lbl">Stop spending at (₹)</span>
+        <input type="number" name="cost_cap_inr" min="1" value="{{ plan.cost_cap_inr | round | int }}"></label>
+      <label class="check">
+        <input type="checkbox" name="personalized_email" value="true" {{ 'checked' if plan.personalized_email }}>
+        <span><span class="lbl">Write a first email for each person</span><span class="help">Based on their buying sign.</span></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="include_icp_only" value="true" {{ 'checked' if plan.include_icp_only }}>
+        <span><span class="lbl">Also include good-fit companies with no buying sign</span><span class="help">Listed separately, so you always know which is which.</span></span>
+      </label>
+    </div>
+    <div class="card-foot">
+      {% if busy %}<div class="note note-warn">{{ m.icon('clock') }}<div>{{ max_runs }} searches are already running. Start this one when one finishes.</div></div>{% endif %}
+      <button type="submit" class="primary btn-lg btn-block" {{ 'disabled' if busy }}>{{ m.icon('bolt') }}Start research</button>
+      <span class="muted xs">Stops at {{ plan.cost_cap_inr | inr }} or {{ plan.count }} leads, whichever comes first. <a href="/new">Start over</a></span>
+    </div>
+  </div>
+</aside>
+</div>
+</form>
+{% endblock %}

@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     hunter_api_key: str = ""
     tinyfish_api_key: str = ""
     reed_api_key: str = ""  # Reed.co.uk Jobseeker API: UK job ads from direct employers
+    # LinkedIn's logged-out job search (no key). On by default at the operator's choice (2026-11-17); its
+    # terms restrict automated access, so it can be turned off here. Pages per search and ads read in full
+    # per run are capped to stay a light, polite user.
+    linkedin_jobs_enabled: bool = True
+    linkedin_pages_per_search: int = 2
+    linkedin_max_descriptions: int = 30
     # Search providers in order; the next is used only when one errors. Serper (Google) first for result
     # quality and dates; TinyFish search as the free fallback. Providers without a key are skipped.
     search_provider_order: list[str] = ["serper", "tinyfish"]

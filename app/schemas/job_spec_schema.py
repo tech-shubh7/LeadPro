@@ -61,8 +61,9 @@ class SourceSpec(BaseModel):
     )  # posting location must contain one as a whole word; empty = any
     min_roles: int = Field(default=1, ge=1)
     max_boards: int = Field(default=60, ge=1, le=300)
-    # A board with more open roles than this belongs to a large company (Databricks, GitLab), which hires
-    # in-house rather than buying from an agency. Raise it only when the ICP really is enterprise.
+    # A board (or job_ads employer) with more open roles than this belongs to a large company (Databricks,
+    # GitLab, Capgemini), which hires in-house rather than buying from an agency. Raise it only when the ICP
+    # really is enterprise.
     max_open_roles: int = Field(default=40, ge=1, le=10000)
     # contracts_awards: UK Contracts Finder award notices
     keywords: list[str] = Field(default_factory=list)  # any of these in the notice title/description
@@ -70,6 +71,9 @@ class SourceSpec(BaseModel):
     sme_only: bool = True  # supplier declared itself an SME in the notice
     published_days: int = Field(default=30, ge=1, le=90)
     max_pages: int = Field(default=10, ge=1, le=40)
+    # job_ads: contract-only is off by default because, on Reed, contract roles are almost all posted by
+    # recruiters (who hide the employer); direct employers mostly advertise permanent roles.
+    contract_only: bool = False
     # agent_browse: a browser agent reads one public page (an accelerator cohort, an exhibitor list, a
     # directory of new firms) and lists the companies on it. Discovery only: every lead it suggests is
     # re-fetched and quote-checked by our own fetcher like any other.

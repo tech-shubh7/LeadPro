@@ -23,7 +23,10 @@ def test_parse_board_url_only_known_platforms():
     assert parse_board_url("https://boards.greenhouse.io/embed/job_app") is None
     assert parse_board_url("https://jobs.ashbyhq.com/Acme-Co/uuid") == ("ashby", "Acme-Co")
     assert parse_board_url("https://jobs.smartrecruiters.com/AcmeLtd/1") == ("smartrecruiters", "AcmeLtd")
-    assert parse_board_url("https://apply.workable.com/acme/") is None  # no verified public endpoint
+    assert parse_board_url("https://apply.workable.com/acme/") == (
+        "workable",
+        "acme",
+    )  # endpoint verified 2026-11-17
     assert parse_board_url("https://evil.example/jobs.lever.co/acme") is None
 
 

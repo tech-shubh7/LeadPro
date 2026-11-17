@@ -11,12 +11,12 @@ recruiter ("our client is...") are filtered again by the caller.
 """
 
 import re
-from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 import httpx
 
 from app.config.settings import get_settings
+from app.providers.jobs.job_ad import JobAd
 from app.utils.http_retry import request_with_retry
 from app.utils.logger import get_logger
 
@@ -25,16 +25,7 @@ BASE_URL = "https://www.reed.co.uk/api/1.0"
 PAGE_SIZE = 100  # Reed's maximum per request
 
 
-@dataclass(frozen=True)
-class ReedJob:
-    job_id: str
-    employer_id: str
-    employer_name: str
-    title: str
-    location: str
-    posted_on: date | None
-    description: str
-    url: str
+ReedJob = JobAd  # Reed results are plain job ads
 
 
 def _field(item: dict, *names: str):
@@ -77,6 +68,7 @@ def parse_job(item: dict) -> ReedJob | None:
         posted_on=parse_reed_date(_field(item, "date", "datePosted")),
         description=" ".join(str(_field(item, "jobDescription", "description") or "").split()),
         url=str(url),
+        board="Reed",
     )
 
 
@@ -94,7 +86,7 @@ class ReedClient:
         self,
         keywords: str,
         location: str = "",
-        contract: bool = True,
+        contract: bool = False,
         limit: int = PAGE_SIZE,
         direct_employer: bool = True,
     ) -> list[ReedJob]:

@@ -100,13 +100,15 @@ in `where_to_look`. Web search is only one channel, and often not the best.
   published. Pair one buyer-only phrase ("scope of work", "submission deadline") with the subject.
 - community posts (inside signals, site: queries): owners asking for a supplier in public forums, e.g.
   site:reddit.com/r/smallbusiness "recommend an agency". Only forums readable without logging in.
-- job_board_source (company job boards read through their APIs): companies hiring for a skill. Strong
-  when the client sells that skill as a service or white-label; useless when the buyer would never hire it.
-- job_ads_source (UK only: Reed job ads from DIRECT employers, contract roles): companies advertising
-  contract or freelance work themselves, dated, with the employer named. The strongest signal-first source
-  when the client sells that skill as a service or white-label: a company hiring contractors has more work
-  than people. Give 3-6 short job-ad searches a hiring company would title its ad with, e.g.
-  "freelance web developer", "contract react developer", "contract AI engineer".
+- job_board_source (company job boards read through their APIs: Greenhouse, Lever, Ashby, SmartRecruiters,
+  Workable, Recruitee, Teamtailor; the last three carry many small agencies): companies hiring for a skill.
+  Strong when the client sells that skill as a service or white-label; useless when the buyer would never
+  hire it. Set its category to the kind of company wanted ("digital agency"): searches then name it.
+- job_ads_source (LinkedIn job ads in any country, plus Reed in the UK; recruiters excluded): companies
+  advertising the skill themselves, dated, with the employer named. Signal-first: strongest when the client
+  sells that skill as white-label or overflow capacity TO companies like the advertiser (an agency hiring
+  developers has more client work than staff). Give 3-6 short searches a hiring company would title its ad
+  with, e.g. "wordpress developer", "web developer agency", "AI automation developer".
 - contract_awards_source (UK Contracts Finder award notices): SME suppliers that just WON public
   contracts. Not tenders to bid on: winners who now need capacity. Strong for subcontracting and
   white-label offers to the winners. UK buyers only.
@@ -209,7 +211,7 @@ class DraftedAwardsSource(BaseModel):
 
 
 class DraftedJobAdsSource(BaseModel):
-    """UK job ads from direct employers (Reed): companies advertising contract or freelance work."""
+    """Job ads with the employer named (LinkedIn; Reed in the UK): companies advertising the skill."""
 
     keywords: list[str] = Field(description="3-6 short job-ad searches, e.g. 'freelance web developer'")
     category: str = Field(
@@ -439,7 +441,7 @@ def planned_sources(out: "PlanOut", country: str) -> list[dict]:
     sources: list[dict] = []
     if out.job_board_source:
         sources.append(out.job_board_source.model_dump() | {"type": "ats_jobs"})
-    if out.job_ads_source and out.job_ads_source.keywords and country == "GB":  # Reed is a UK job board
+    if out.job_ads_source and out.job_ads_source.keywords:  # LinkedIn anywhere; Reed added in the UK
         ads = out.job_ads_source
         sources.append(
             {

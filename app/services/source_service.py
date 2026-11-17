@@ -1,7 +1,8 @@
 """Structured-source discovery: public datasets in which every row is already a candidate buyer.
 
 ats_jobs         companies with a live opening for a given kind of role (Greenhouse / Lever / Ashby /
-                 SmartRecruiters public APIs). A posting is a dated, quotable signal by itself.
+                 SmartRecruiters / Workable / Recruitee / Teamtailor public APIs). A posting is a dated, quotable signal by itself.
+job_ads          employers advertising a role on LinkedIn (any country) or Reed (UK), recruiters dropped.
 contracts_awards suppliers named in recent UK Contracts Finder award notices, with the Companies House
                  number the notice itself states.
 
@@ -15,9 +16,10 @@ from datetime import date, timedelta
 
 import httpx
 
-from app.config.constants import STAFFING_WORDS
+from app.config.constants import RECRUITER_NAME_WORDS
 from app.config.settings import get_settings
 from app.providers.jobs.ats_client import AtsClient, JobPosting, parse_board_url
+from app.providers.jobs.linkedin_client import LinkedInJobsClient
 from app.providers.jobs.reed_client import ReedClient
 from app.providers.search.serper_client import SearchHit, SerperClient
 from app.providers.tenders.contracts_finder_client import Award, ContractsFinderClient
@@ -64,23 +66,37 @@ def notice_hit(a: Award, today: date) -> SearchHit:
 
 
 MAX_BOARD_QUERIES = 8
-# Where each platform's boards are indexed. Greenhouse moved boards to job-boards.greenhouse.io; searches
-# for the old host alone now return nothing (job 15).
-BOARD_HOSTS = ("jobs.lever.co", "job-boards.greenhouse.io", "jobs.ashbyhq.com")
+# Where each platform's boards are indexed, grouped so one search covers three platforms (Google accepts
+# OR'd site: filters; checked 2026-11-17). Greenhouse moved boards to job-boards.greenhouse.io; searches
+# for the old host alone now return nothing (job 15). The second group is where small agencies list roles.
+BOARD_HOST_GROUPS = (
+    ("jobs.lever.co", "job-boards.greenhouse.io", "jobs.ashbyhq.com"),
+    ("apply.workable.com", "recruitee.com", "teamtailor.com"),
+)
+
+
+def _sites(hosts: tuple[str, ...]) -> str:
+    return "(" + " OR ".join(f"site:{h}" for h in hosts) + ")"
 
 
 def board_queries(src: SourceSpec) -> list[str]:
     """The plan's board searches (old Greenhouse host widened to both), topped up with one search per
-    platform and role so the source does not rest on two queries. A board is only a lead once its own API
-    shows matching, dated, open roles, so a broad search costs a query, never a false lead."""
+    platform group and role, so the source does not rest on two queries. When the companies wanted are a
+    kind of business ("digital agency"), the top-ups name it first: an agency's ad says it is an agency.
+    A board is only a lead once its own API shows matching, dated, open roles, so a broad search costs a
+    query, never a false lead."""
     out = [
         q.replace("site:boards.greenhouse.io", "(site:boards.greenhouse.io OR site:job-boards.greenhouse.io)")
         for q in src.search_queries
     ]
     where = f' "{src.locations[0]}"' if src.locations else ""
-    for role in src.role_keywords[:2]:
-        for host in BOARD_HOSTS:
-            out.append(f'site:{host} "{role}"{where}')
+    kind = (src.category or "").split()[-1:]  # "digital agency" -> "agency": the word ads actually use
+    terms = [f' "{kind[0]}"', ""] if kind else [""]
+    # Ordered so the cap cuts the least useful searches, never a whole platform group.
+    for term in terms:
+        for role in src.role_keywords[:2]:
+            for hosts in BOARD_HOST_GROUPS:
+                out.append(f'{_sites(hosts)} "{role}"{term}{where}')
     return list(dict.fromkeys(out))[:MAX_BOARD_QUERIES]
 
 
@@ -204,43 +220,112 @@ def browse_url_problem(url: str | None) -> str | None:
 
 
 # An ad written by a recruiter for someone else's vacancy names the recruiter, not the company that needs
-# the work. Reed's postedByDirectEmployer filter catches most; these phrases catch the rest.
+# the work. Reed's postedByDirectEmployer filter catches most; LinkedIn has no such filter, so the employer
+# name and these phrases are checked on every ad ("...opportunity with an established digital agency" was
+# a recruiter's ad on LinkedIn, 2026-11-17).
 _RECRUITER_WORDING = re.compile(
-    r"\b(our client|my client|on behalf of|we are recruiting for|recruiting on behalf)\b", re.I
+    r"\b(our client|my client|on behalf of|we are recruiting for|recruiting on behalf"
+    r"|opportunity with an? (?:established|award[- ]winning|leading|growing|well[- ]known|successful)"
+    r"|(?:working|partnered) with an? (?:established|award[- ]winning|leading|growing))\b",
+    re.I,
 )
 MAX_ADS_PER_SEARCH = 100
+_LEGAL_SUFFIX = re.compile(r"\b(ltd|limited|plc|llp|llc|inc|uk|group)\b|[^a-z0-9]")
 
 
 def _is_recruiter_ad(job) -> bool:
     name = job.employer_name.lower()
-    return any(w in name for w in STAFFING_WORDS) or bool(_RECRUITER_WORDING.search(job.description))
+    return any(w in name for w in RECRUITER_NAME_WORDS) or bool(_RECRUITER_WORDING.search(job.description))
 
 
-async def _job_ad_candidates(src: SourceSpec, spec: JobSpec, reed, today: date) -> list:
-    """Employers advertising contract/freelance roles on Reed, inside the freshness window, one candidate per
-    employer with its ads as dated, first-party evidence. Signal first: every company found already has its
-    reason, and nothing is spent researching companies without one."""
+def _employer_key(name: str) -> str:
+    """'Kensa Creative Ltd' and 'Kensa Creative' are one employer across boards."""
+    return _LEGAL_SUFFIX.sub("", name.lower()) or name.lower()
+
+
+async def _board_ads(src: SourceSpec, spec: JobSpec, clients: dict) -> list:
+    """Every ad the job boards return for the plan's searches. One board failing (or LinkedIn rate-limiting)
+    loses that board's ads only."""
+    from app.config.constants import COUNTRIES
+    from app.providers.jobs.linkedin_client import LinkedInRateLimitedError
+
+    country = spec.countries[0]
+    searches = [(k, loc) for k in src.keywords for loc in (src.locations or [""])]
+    ads: list = []
+    if (reed := clients.get("reed")) is not None and country == "GB":  # Reed is a UK job board
+        try:
+            for keywords, location in searches:
+                ads += await reed.search(
+                    keywords, location=location, contract=src.contract_only, limit=MAX_ADS_PER_SEARCH
+                )
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("reed search failed, its ads skipped: %s: %s", type(exc).__name__, exc)
+    if (linkedin := clients.get("linkedin")) is not None:
+        pages = get_settings().linkedin_pages_per_search
+        try:
+            for keywords, location in searches:
+                where = location or COUNTRIES.get(country, country)
+                ads += await linkedin.search(keywords, where, spec.freshness_days, pages)
+        except LinkedInRateLimitedError:
+            logger.warning("linkedin rate-limited: keeping the %d ads found so far", len(ads))
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("linkedin search failed, its ads skipped: %s: %s", type(exc).__name__, exc)
+    return ads
+
+
+async def _described(groups: list[list], linkedin) -> list[list]:
+    """LinkedIn lists ads without their text. Reads the text of each employer's newest ads (largest
+    employers first, capped per run), then drops employers whose ad turns out to be a recruiter's."""
+    from app.providers.jobs.linkedin_client import LinkedInRateLimitedError
+
+    if linkedin is None:
+        return groups
+    budget = get_settings().linkedin_max_descriptions
+    out = []
+    for jobs in groups:
+        head = jobs[:MAX_HITS_PER_COMPANY]
+        for i, ad in enumerate(head):
+            if ad.board != "LinkedIn" or ad.description or budget <= 0 or linkedin.blocked:
+                continue
+            budget -= 1
+            try:
+                head[i] = await linkedin.describe(ad)
+            except LinkedInRateLimitedError:
+                logger.warning("linkedin rate-limited while reading ads: the rest keep their card text")
+        if any(_is_recruiter_ad(ad) for ad in head):
+            continue
+        out.append(head + jobs[MAX_HITS_PER_COMPANY:])
+    return out
+
+
+async def _job_ad_candidates(src: SourceSpec, spec: JobSpec, clients: dict, today: date) -> list:
+    """Direct employers advertising the skill on job boards (Reed in the UK, LinkedIn anywhere), inside the
+    freshness window, one candidate per employer with its ads as dated, first-party evidence; the ICP gate
+    then keeps only the kind of company wanted. Signal first: every company found already has its reason,
+    and nothing is spent on companies without one."""
     from app.services.discovery_service import Candidate
 
-    if reed is None:
-        logger.warning("job-ad source skipped: no Reed client (REED_API_KEY)")
+    if clients.get("reed") is None and clients.get("linkedin") is None:
+        logger.warning("job-ad source skipped: no job board available (REED_API_KEY / LINKEDIN_JOBS_ENABLED)")
         return []
-    locations = src.locations or [""]
     by_employer: dict[str, list] = {}
-    for keywords in src.keywords:
-        for location in locations:
-            for job in await reed.search(
-                keywords, location=location, contract=True, limit=MAX_ADS_PER_SEARCH
-            ):
-                if job.posted_on is None or not within_window(job.posted_on, today, spec.freshness_days):
-                    continue  # undated or stale: not a current sign
-                if _is_recruiter_ad(job):
-                    continue
-                by_employer.setdefault(job.employer_name.lower(), []).append(job)
+    for job in await _board_ads(src, spec, clients):
+        if job.posted_on is None or not within_window(job.posted_on, today, spec.freshness_days):
+            continue  # undated or stale: not a current sign
+        if _is_recruiter_ad(job):
+            continue
+        by_employer.setdefault(_employer_key(job.employer_name), []).append(job)
+    groups = [
+        sorted({(j.board, j.job_id): j for j in jobs}.values(), key=lambda j: j.posted_on, reverse=True)
+        for jobs in by_employer.values()
+    ]
+    # An employer with more live ads than a board may hold is a large company that hires in-house (Capgemini
+    # posted 43 of 122 Reed ads, 2026-11-17): the same rule as for job boards, applied before any spend.
+    groups = sorted((g for g in groups if len(g) <= src.max_open_roles), key=len, reverse=True)
     out = []
-    for jobs in by_employer.values():
-        jobs = sorted({j.job_id: j for j in jobs}.values(), key=lambda j: j.posted_on, reverse=True)
+    for jobs in await _described(groups, clients.get("linkedin")):
         first = jobs[0]
+        boards = " and ".join(sorted({j.board for j in jobs}))
         titles = "; ".join(f"{j.title} ({j.posted_on.isoformat()})" for j in jobs[:MAX_HITS_PER_COMPANY])
         out.append(
             Candidate(
@@ -248,7 +333,7 @@ async def _job_ad_candidates(src: SourceSpec, spec: JobSpec, reed, today: date) 
                 name_hint=first.employer_name,
                 category=src.category,
                 prior=min(0.95, 0.7 + 0.05 * len(jobs)),
-                triage_note=f"{len(jobs)} contract ad(s) on Reed: {titles}",
+                triage_note=f"{len(jobs)} job ad(s) on {boards}: {titles}",
                 seed_hits=[_job_ad_hit(j, today) for j in jobs[:MAX_HITS_PER_COMPANY]],
             )
         )
@@ -260,10 +345,10 @@ def _job_ad_hit(job, today: date) -> SearchHit:
     return SearchHit(
         title=f"{job.employer_name} job posting: {job.title}{where}",
         link=job.url,
-        snippet=f"Posted {job.posted_on.isoformat()} on Reed. {job.description}".strip(),
+        snippet=f"Posted {job.posted_on.isoformat()} on {job.board}. {job.description}".strip(),
         date_text=job.posted_on.isoformat(),
         kind="job_ad",
-        query=f"reed:{job.employer_id or job.job_id}",
+        query=f"{job.board.lower()}:{job.employer_id or job.job_id}",
         searched_on=today.isoformat(),
     )
 
@@ -318,9 +403,14 @@ async def collect_sources(
     clients = clients or {}
     ats = clients.get("ats") or AtsClient()
     cf = clients.get("contracts") or ContractsFinderClient()
-    owns_reed = "reed" not in clients and bool(get_settings().reed_api_key)
-    if owns_reed:
-        clients = {**clients, "reed": ReedClient()}
+    settings, wants_ads = get_settings(), any(src.type == "job_ads" for src in spec.sources)
+    owns_reed = wants_ads and "reed" not in clients and bool(settings.reed_api_key)
+    owns_linkedin = wants_ads and "linkedin" not in clients and settings.linkedin_jobs_enabled
+    clients = {
+        **clients,
+        **({"reed": ReedClient()} if owns_reed else {}),
+        **({"linkedin": LinkedInJobsClient()} if owns_linkedin else {}),
+    }
     candidates, spent = [], 0
     try:
         for src in spec.sources:
@@ -328,7 +418,7 @@ async def collect_sources(
                 if src.type == "ats_jobs":
                     found, used = await _ats_candidates(src, spec, serper, ats, gl, today, budget - spent)
                 elif src.type == "job_ads":
-                    found, used = await _job_ad_candidates(src, spec, clients.get("reed"), today), 0
+                    found, used = await _job_ad_candidates(src, spec, clients, today), 0
                 elif src.type == "agent_browse":
                     found, used = await _browse_candidates(src, clients.get("agent")), 0
                 else:
@@ -346,6 +436,8 @@ async def collect_sources(
             await cf.client.aclose()
         if owns_reed:
             await clients["reed"].aclose()
+        if owns_linkedin:
+            await clients["linkedin"].aclose()
     return candidates, spent
 
 
@@ -359,6 +451,9 @@ BOARD_URLS = {
     "lever": ("jobs.lever.co/{slug}",),
     "ashby": ("jobs.ashbyhq.com/{slug}",),
     "smartrecruiters": ("jobs.smartrecruiters.com/{slug}", "careers.smartrecruiters.com/{slug}"),
+    "workable": ("apply.workable.com/{slug}",),
+    "recruitee": ("{slug}.recruitee.com",),
+    "teamtailor": ("{slug}.teamtailor.com",),
 }
 
 

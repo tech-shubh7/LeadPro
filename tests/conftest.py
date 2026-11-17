@@ -6,6 +6,7 @@ from app.config.settings import Settings
 _base = Settings().database_url.rsplit("/", 1)[0]
 os.environ["DATABASE_URL"] = f"{_base}/leadpro_test"
 os.environ["APP_ENV"] = "test"
+os.environ["LINKEDIN_JOBS_ENABLED"] = "false"  # tests never reach LinkedIn; they pass a fake
 
 import pytest  # noqa: E402
 

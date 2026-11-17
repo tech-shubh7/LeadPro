@@ -43,7 +43,7 @@ def test_a_result_parses_in_either_casing_and_one_missing_essentials_is_skipped(
 
 
 @respx.mock
-def test_search_authenticates_and_asks_for_direct_employer_contract_ads(monkeypatch):
+def test_search_authenticates_and_asks_for_direct_employer_ads_of_any_contract_type(monkeypatch):
     from app.config.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "reed_api_key", "k")
@@ -74,7 +74,7 @@ def test_search_authenticates_and_asks_for_direct_employer_contract_ads(monkeypa
     request = route.calls.last.request
     assert request.headers["authorization"] == "Basic " + base64.b64encode(b"k:").decode()
     assert request.url.params["postedByDirectEmployer"] == "true"
-    assert request.url.params["contract"] == "true"
+    assert "contract" not in request.url.params  # contract ads on Reed are almost all recruiters'
     assert request.url.params["locationName"] == "Leeds"
     assert job.title == "Freelance Developer"
 
@@ -125,7 +125,7 @@ def test_job_ads_become_one_dated_candidate_per_employer_without_recruiters_or_s
         _job(5, "Old Studio", posted="2026-08-01"),  # outside the 30-day window
         _job(6, "Undated Studio", posted=None),
     ]
-    [cand] = asyncio.run(source_service._job_ad_candidates(SRC, SPEC, FakeReed(jobs), TODAY))
+    [cand] = asyncio.run(source_service._job_ad_candidates(SRC, SPEC, {"reed": FakeReed(jobs)}, TODAY))
     assert cand.name_hint == "Pixel Agency"
     assert [h.kind for h in cand.seed_hits] == ["job_ad", "job_ad"]
     assert cand.seed_hits[0].date_text == "2026-11-12"  # newest first
@@ -144,11 +144,11 @@ def test_a_job_ad_is_dated_and_labelled_as_a_job_posting():
     assert source_class(hit.link, "pixel.co.uk", {hit.link: hit.kind}) == "job_posting"
 
 
-def test_without_a_reed_key_the_source_is_skipped_not_failed():
-    assert asyncio.run(source_service._job_ad_candidates(SRC, SPEC, None, TODAY)) == []
+def test_without_any_job_board_the_source_is_skipped_not_failed():
+    assert asyncio.run(source_service._job_ad_candidates(SRC, SPEC, {}, TODAY)) == []
 
 
-def test_the_planner_job_ad_source_is_used_for_uk_buyers_only():
+def test_the_planner_job_ad_source_is_used_in_every_country_linkedin_covers():
     from app.services.intake_service import DraftedJobAdsSource, planned_sources
 
     class Out:
@@ -157,4 +157,24 @@ def test_the_planner_job_ad_source_is_used_for_uk_buyers_only():
         job_ads_source = DraftedJobAdsSource(keywords=["freelance web developer"], category="agency", why="w")
 
     assert [s["type"] for s in planned_sources(Out(), "GB")] == ["job_ads"]
-    assert planned_sources(Out(), "US") == []
+    assert [s["type"] for s in planned_sources(Out(), "US")] == ["job_ads"]
+
+
+@pytest.mark.parametrize(
+    "employer",
+    [
+        "ITOL Recruit",
+        "eFinancialCareers",
+        "Acme Resourcing Ltd",
+        "Top Talent UK",
+        "Prime Personnel",
+        "Reed Jobs",
+    ],
+)
+def test_recruiters_and_job_boards_posing_as_employers_are_dropped(employer):
+    """Live Reed data: these came back flagged as direct employers."""
+    assert source_service._is_recruiter_ad(_job(9, employer))
+
+
+def test_a_real_agency_is_not_mistaken_for_a_recruiter():
+    assert not source_service._is_recruiter_ad(_job(9, "Kensa Creative"))

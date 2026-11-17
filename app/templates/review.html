@@ -84,7 +84,7 @@
       <li class="channel">{{ m.icon({'ats_jobs': 'layers', 'job_ads': 'layers', 'contracts_awards': 'shield', 'agent_browse': 'globe'}.get(src.type, 'search')) }}
         <div>
           {% if src.type == 'ats_jobs' %}<b>Company job boards</b> <span class="muted small">companies hiring {{ src.role_keywords[:3] | join(', ') }}{% if src.locations %} in {{ src.locations[:2] | join(', ') }}{% endif %}</span>
-          {% elif src.type == 'job_ads' %}<b>UK job ads from employers hiring contractors</b> <span class="muted small">(Reed): {{ src.keywords[:4] | join(', ') }}</span>
+          {% elif src.type == 'job_ads' %}<b>Job ads from employers hiring for this skill</b> <span class="muted small">(LinkedIn{% if job.target_countries[0] == 'GB' %}, Reed{% endif %}): {{ src.keywords[:4] | join(', ') }}</span>
           {% elif src.type == 'contracts_awards' %}<b>Winners of UK public contracts</b> <span class="muted small">({{ src.keywords[:3] | join(', ') }}): they now need capacity</span>
           {% elif src.type == 'agent_browse' %}<b>A list page, read by our browser agent</b> <a class="src" href="{{ src.url | safe_url }}" rel="noreferrer noopener nofollow" target="_blank">{{ src.url | host }}{{ m.icon('external') }}</a>
             <div class="muted small">{{ src.goal }}</div>

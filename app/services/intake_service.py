@@ -10,6 +10,7 @@ the product still works and never pretends a template was researched.
 """
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -286,6 +287,7 @@ class Plan:
     personalized_email: bool = True
     include_icp_only: bool = False
     output_mode: OutputMode = OutputMode.CONTACTS
+    hiring_is_demand: bool = False  # the client sells capacity: a target hiring for its skill is demand
     cost_cap_inr: float | None = None
     generated: bool = True
     pages_read: list[str] = field(default_factory=list)
@@ -317,6 +319,8 @@ class Plan:
             personalized_email=drafts,
             include_icp_only=self.include_icp_only and contacts,
             output_mode=self.output_mode,
+            offer=self.offer,
+            hiring_is_demand=self.hiring_is_demand,
             cost_cap_inr=self.cost_cap_inr,
             icp=self.icp,
             # Most searches find no buyer, so the budget has to grow with the ask: ~8 per lead wanted.
@@ -781,6 +785,7 @@ def plan_to_json(plan: Plan) -> dict:
             "sources": plan.sources,
             "include_icp_only": plan.include_icp_only,
             "output_mode": plan.output_mode.value,
+            "hiring_is_demand": plan.hiring_is_demand,
             "profile": plan.profile.model_dump(),
             "where_to_look": plan.where_to_look,
             "exclusions": plan.exclusions,
@@ -812,6 +817,7 @@ def plan_from_job(job) -> Plan:
         personalized_email=job.personalized_email,
         include_icp_only=bool(intake.get("include_icp_only")),
         output_mode=stored_output_mode(job),
+        hiring_is_demand=bool(intake.get("hiring_is_demand")),
         cost_cap_inr=job.cost_cap_inr,
         generated=bool(intake.get("generated", True)),
         pages_read=intake.get("pages_read") or [],
@@ -820,6 +826,20 @@ def plan_from_job(job) -> Plan:
         exclusions=intake.get("exclusions") or [],
         where_to_look=intake.get("where_to_look", ""),
     )
+
+
+# Words that mark a client selling capacity to other firms rather than finished projects to end clients.
+_CAPACITY_OFFER = re.compile(
+    r"white[\s-]?label|staff(ing)?[\s-]augmentation|outsourc|offshore|nearshore|subcontract|sub-contract|"
+    r"dedicated (developer|engineer|team)s?|team extension|extended team|hire (a |our )?developers?",
+    re.I,
+)
+
+
+def sells_capacity(plan: "Plan") -> bool:
+    """Suggested default for `hiring_is_demand`, from what the client and the request say. The operator
+    sees and can change it on the review page; it only decides how a hire is read, never what is searched."""
+    return bool(_CAPACITY_OFFER.search(" ".join((plan.ask, plan.offer, plan.client_summary, plan.sells_how))))
 
 
 def stored_output_mode(job) -> OutputMode:
@@ -897,6 +917,7 @@ class ReviewedPlanForm:
     personalized_email: bool = False
     include_icp_only: bool = False
     output_mode: OutputMode = OutputMode.CONTACTS
+    hiring_is_demand: bool = False
     industries: str = ""
     geographies: str = ""
     size_band: str = ""
@@ -965,6 +986,7 @@ def build_reviewed_spec(job, form: ReviewedPlanForm) -> JobSpec:
         personalized_email=form.personalized_email,
         include_icp_only=form.include_icp_only,
         output_mode=form.output_mode,
+        hiring_is_demand=form.hiring_is_demand,
         cost_cap_inr=form.cost_cap_inr or job.cost_cap_inr,
         profile=ClientProfile(**(intake.get("profile") or {})),
     ).enforce_eligibility()

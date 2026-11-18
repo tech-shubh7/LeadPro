@@ -24,7 +24,13 @@ from app.providers.llm.llm_provider import LLMProvider
 from app.providers.web.page_fetcher import Fetcher
 from app.repositories import run_queue_repository
 from app.schemas.job_spec_schema import JobSpec
-from app.services.intake_service import draft_plan, plan_from_job, plan_to_json, stored_output_mode
+from app.services.intake_service import (
+    draft_plan,
+    plan_from_job,
+    plan_to_json,
+    sells_capacity,
+    stored_output_mode,
+)
 from app.utils.cost_tracker import CostTracker
 from app.utils.logger import get_logger
 from app.utils.normalize import normalize_domain
@@ -152,6 +158,7 @@ async def draft(job_id: int) -> None:
         plan.freshness_days, plan.personalized_email = freshness, emails
         plan.include_icp_only, plan.cost_cap_inr = icp_only, cap
         plan.output_mode = output_mode
+        plan.hiring_is_demand = sells_capacity(plan)
         with session_scope() as s:
             if job := s.get(Job, job_id):
                 job.icp = plan_to_json(plan)

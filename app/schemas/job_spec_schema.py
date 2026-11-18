@@ -137,6 +137,13 @@ class JobSpec(BaseModel):
     # SIGNALS_ONLY delivers company + dated buying signal and nothing about people: no contact lookup, no
     # paid email finders, no personal data stored, no drafts. Contacts come from the client's own tools.
     output_mode: OutputMode = OutputMode.CONTACTS
+    # What the client sells, in one line (the plan's offer). Kept on the spec so every step judges intent
+    # against it, also in a signals-only run, which has no sender.
+    offer: str = ""
+    # The client sells capacity to companies like the targets (white-label or outsourced development, staff
+    # augmentation): a target's own job posting for that work counts as demand, labelled "hiring for this
+    # skill", instead of as evidence it builds in-house. See signal_intelligence_service.HIRING_FOR_OFFER.
+    hiring_is_demand: bool = False
 
     @field_validator("countries")
     @classmethod

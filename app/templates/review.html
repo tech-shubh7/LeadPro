@@ -201,6 +201,10 @@
         </select>
         <span class="help">Signal only: no people or emails are looked up; find contacts in your CRM, Apollo or Hunter.</span></label>
       <label class="check">
+        <input type="checkbox" name="hiring_is_demand" value="true" {{ 'checked' if plan.hiring_is_demand }}>
+        <span><span class="lbl">Count a company hiring for this skill as a buyer</span><span class="help">For white-label or outsourcing offers: "you're hiring a developer; our team can start now". Labelled as a hiring signal, never as a request.</span></span>
+      </label>
+      <label class="check">
         <input type="checkbox" name="personalized_email" value="true" {{ 'checked' if plan.personalized_email }}>
         <span><span class="lbl">Write a first email for each person</span><span class="help">Based on their buying sign. Contacts mode only.</span></span>
       </label>

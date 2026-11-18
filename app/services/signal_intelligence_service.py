@@ -35,7 +35,13 @@ Intent = Literal[
     "in_house_build",  # hiring permanent staff to do exactly this themselves: against buying outside
     "unrelated",  # true, but nothing to do with what the client sells
 ]
-BUYING = frozenset({"asks_for_supplier", "outsourcing_signal", "project_needs_offer", "budget_only"})
+# Never chosen by the model: set in code for clients that sell capacity (white-label, outsourced development)
+# when a company's own job posting hires for the work the client supplies. For those clients a hire is the
+# need itself ("you're hiring a WordPress developer; our team starts this week"), not a reason they won't buy.
+HIRING_FOR_OFFER = "hiring_for_offer"
+BUYING = frozenset(
+    {"asks_for_supplier", "outsourcing_signal", "project_needs_offer", HIRING_FOR_OFFER, "budget_only"}
+)
 AGAINST = frozenset({"in_house_build", "unrelated"})
 
 INTENT_LABELS = {
@@ -43,6 +49,7 @@ INTENT_LABELS = {
     "outsourcing_signal": "Looking for outside help",
     "project_needs_offer": "Project needs this work",
     "budget_only": "Has budget only",
+    HIRING_FOR_OFFER: "Hiring for this skill (not a partner request)",
     "in_house_build": "Building it in-house",
     "unrelated": "Not related",
 }
@@ -137,7 +144,7 @@ async def assess_signals(
         s.date_confidence = date_confidence(s)
     if not signals:
         return IntentAssessment()
-    offer = spec.sender.offer if spec.sender and spec.sender.offer else spec.ask
+    offer = spec.offer or (spec.sender.offer if spec.sender and spec.sender.offer else "") or spec.ask
     listing = "\n".join(
         f'[{i}] {s.signal_type}: {s.claim} | quote: "{s.quote}"' for i, s in enumerate(signals)
     )
@@ -157,8 +164,20 @@ async def assess_signals(
     for i, s in enumerate(signals):
         if verdict := verdicts.get(i):
             s.intent, s.intent_reason = verdict.intent, verdict.reason
+        _hiring_as_demand(s, spec)
         (result.against if s.intent in AGAINST else result.buying).append(s)
     return result
+
+
+def _hiring_as_demand(signal, spec: JobSpec) -> None:
+    """For a client that sells capacity, the company's own job posting for the work it supplies is demand.
+    Deterministic, not left to the model: only a posting (ATS, job board, careers page) the model itself
+    judged to be hiring for exactly this work (in_house_build) is relabelled, never an unrelated one."""
+    if spec.hiring_is_demand and signal.intent == "in_house_build" and signal.source_class == "job_posting":
+        signal.intent = HIRING_FOR_OFFER
+        signal.intent_reason = (
+            f"hiring for work the client supplies as a white-label/outside team ({signal.intent_reason})"
+        )
 
 
 def can_qualify(signal) -> bool:
@@ -178,7 +197,7 @@ TIER_ORDER = {TIER_STRONG: 0, TIER_GOOD: 1, TIER_WEAK: 2, "": 3}
 TIER_LABELS = {TIER_STRONG: "Strong", TIER_GOOD: "Good", TIER_WEAK: "Weak"}
 # A company whose only signs are budget can never score high on intent, whatever the scorer says.
 WEAK_INTENT_CAP = 15  # of 40
-_DEMAND = ("asks_for_supplier", "outsourcing_signal", "project_needs_offer")
+_DEMAND = ("asks_for_supplier", "outsourcing_signal", "project_needs_offer", HIRING_FOR_OFFER)
 _STRENGTH_ORDER = {kind: i for i, kind in enumerate((*_DEMAND, "budget_only"))}
 
 
@@ -205,7 +224,9 @@ def combine(signals: list) -> SignalStack:
         None,
         "",
     }
-    if "asks_for_supplier" in demand or len(demand) >= 2:
+    # A hire is a need but not a request: it can make a lead good, and never makes one strong on its own or
+    # by pairing with another sign (a freelance ad and a permanent ad are one need, not two kinds).
+    if "asks_for_supplier" in demand or len(set(demand) - {HIRING_FOR_OFFER}) >= 2:
         tier = TIER_STRONG
     elif demand or unclassified:
         tier = TIER_GOOD

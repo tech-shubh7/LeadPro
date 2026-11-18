@@ -64,6 +64,18 @@ def evidence_listing(extraction: Extraction, today: date, days: int) -> tuple[st
     return "\n".join(lines), ids
 
 
+# Added for clients that sell capacity (white-label / outsourced work). Without it the judge, reading
+# "permanent developer role", marked every hiring agency down for "no evidence it subcontracts" (job 27).
+CAPACITY_SELLER_RULE = (
+    "\nThis client sells delivery capacity TO companies like this one (white-label or outsourced work). For "
+    "this client a company hiring for the skill the client supplies HAS the need: intent 'hiring_for_offer' "
+    "is a real, medium-strength buying sign (an open, dated vacancy is the opening: offer the team instead of "
+    "a hire). Do not mark it down merely for lacking an explicit request for a partner or proof of past "
+    "subcontracting; do mark it down if the role is unrelated to what the client supplies. Say in risks that "
+    "it is a hiring signal, not a request for a partner."
+)
+
+
 def _clamp(value: int, high: int) -> int:
     """Never trust model arithmetic or ranges."""
     return max(0, min(high, value))
@@ -82,6 +94,7 @@ async def score(
             {
                 "icp": spec.icp,
                 "ask": spec.ask,
+                "client_offer": spec.offer or spec.ask,
                 "signal_playbook": playbook,
                 "negative_signals": spec.playbook.negative,
             }
@@ -99,7 +112,7 @@ async def score(
         "are evidence AGAINST buying (building in-house, unrelated): weigh them down. Several independent buying "
         "signs of DIFFERENT kinds (e.g. contract hiring and a rebuild project) are much stronger than one. Cite evidence ids in "
         "why_this_lead. Today is "
-        f"{today.isoformat()}.",
+        f"{today.isoformat()}." + (CAPACITY_SELLER_RULE if spec.hiring_is_demand else ""),
         data,
         ScoreOut,
         max_output_tokens=3000,

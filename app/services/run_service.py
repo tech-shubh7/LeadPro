@@ -125,13 +125,14 @@ class RunSummary:
     stopped_by_cap: bool = False  # the budget ended the run: it can be continued with a bigger one
 
 
-def default_deps(cost: CostTracker, countries: list[str], llm_mode: str | None = None) -> Deps:
+def default_deps(cost: CostTracker, spec: JobSpec, llm_mode: str | None = None) -> Deps:
     return Deps(
         create_search_client(cost),
         create_llm(cost, llm_mode),
         Fetcher(),
-        create_email_finders(cost),
-        CompaniesHouseClient() if "GB" in countries else None,
+        # A signals-only run never looks anyone up: no paid email finder is even constructed.
+        create_email_finders(cost) if spec.wants_contacts else [],
+        CompaniesHouseClient() if "GB" in spec.countries else None,
         TinyFishAgentClient(cost) if get_settings().tinyfish_api_key else None,
     )
 
@@ -271,23 +272,7 @@ async def _qualify(
     else:
         raise CandidateRejectedError(f"score {sc.total} below {settings.qualify_score}: {sc.why}", score=sc)
 
-    officers, officers_url = [], None
-    if record and deps.registry:
-        officers = await deps.registry.decision_officers(record.registry_id)
-        officers_url = f"https://find-and-update.company-information.service.gov.uk/company/{record.registry_id}/officers"
-    people = rank_decision_makers(
-        ext, officers, officers_url, spec.playbook.buyer_titles, settings.max_decision_makers
-    )
-    await attach_emails(
-        people,
-        bundle.emails,
-        bundle.domain,
-        deps.finders,
-        known=await asyncio.to_thread(
-            store.known_verified_emails, bundle.domain, settings.email_reuse_max_days
-        ),
-        suppressed_emails=guards.suppressed_emails,
-    )
+    people = await _decision_makers(spec, deps, guards, bundle, ext, record) if spec.wants_contacts else []
     decision = pack.outreach_decision(record)
     lead = LeadResult(
         lead_id=lead_id,
@@ -311,6 +296,7 @@ async def _qualify(
         outreach_reason=decision.reason,
         people=people,
         tier=tier,
+        contacts_wanted=spec.wants_contacts,
     )
     # Drafts need a genuine dated hook; an ICP-only lead has none, so no email is written (no invented urgency).
     if spec.personalized_email and decision.allowed and tier == LeadTier.SIGNAL:
@@ -318,6 +304,29 @@ async def _qualify(
             if draft := await write_draft(p, ext, sc, spec, deps.llm, today):
                 lead.drafts[(p.first_name, p.last_name)] = draft
     return lead
+
+
+async def _decision_makers(spec: JobSpec, deps: Deps, guards: RunGuards, bundle, ext, record) -> list:
+    """Ranked decision-makers with verified emails attached (contacts mode only: paid finders, PII)."""
+    settings = get_settings()
+    officers, officers_url = [], None
+    if record and deps.registry:
+        officers = await deps.registry.decision_officers(record.registry_id)
+        officers_url = f"https://find-and-update.company-information.service.gov.uk/company/{record.registry_id}/officers"
+    people = rank_decision_makers(
+        ext, officers, officers_url, spec.playbook.buyer_titles, settings.max_decision_makers
+    )
+    await attach_emails(
+        people,
+        bundle.emails,
+        bundle.domain,
+        deps.finders,
+        known=await asyncio.to_thread(
+            store.known_verified_emails, bundle.domain, settings.email_reuse_max_days
+        ),
+        suppressed_emails=guards.suppressed_emails,
+    )
+    return people
 
 
 async def run_job(
@@ -333,7 +342,7 @@ async def run_job(
     settings = get_settings()
     today = today or date.today()
     cost = CostTracker(spec.cost_cap_inr or settings.max_cost_per_job_inr)
-    deps = deps or default_deps(cost, spec.countries, llm_mode)
+    deps = deps or default_deps(cost, spec, llm_mode)
     country = spec.countries[0]
 
     with session_scope() as s:
@@ -433,10 +442,11 @@ async def run_job(
                     # The console shows spend live; without this it sat at the drafting cost for the whole run.
                     await asyncio.to_thread(_save_cost, job_id, cost)
                 leads.append(lead)
-                # Stop once enough SIGNAL leads have a verified contact. ICP-only leads only fill the gap left
-                # when candidates run out; counting them here would end the search for signal leads early.
+                # Stop once enough SIGNAL leads are deliverable (a verified contact, or just the signal in a
+                # signals-only run). ICP-only leads only fill the gap left when candidates run out; counting
+                # them here would end the search for signal leads early.
                 if (
-                    sum(1 for lead in leads if lead.verified_people and lead.tier == LeadTier.SIGNAL)
+                    sum(1 for lead in leads if lead.deliverable and lead.tier == LeadTier.SIGNAL)
                     >= spec.count
                 ):
                     stop.set()
@@ -472,7 +482,7 @@ async def _revalidate_before_delivery(
 ) -> list[LeadResult]:
     """Fresh re-check of every deliverable lead's buying signs; leads whose signs are all gone are held
     back and recorded as dropped on revalidation, with the reason."""
-    deliverable = [lead for lead in leads if lead.verified_people]
+    deliverable = [lead for lead in leads if lead.deliverable]
     if not deliverable:
         return leads
     await asyncio.to_thread(_set_status, job_id, JobStatus.REVALIDATING, {"candidates": candidates})
@@ -522,14 +532,14 @@ def _finalize(
         # target was reached finish their leads, those were paid for, and holding them back left them stored
         # as 'qualified' but never delivered, so the console counted leads the spreadsheet did not have.
         qualified = sorted(
-            (lead for lead in leads if lead.verified_people and lead.tier == LeadTier.SIGNAL), key=rank_key
+            (lead for lead in leads if lead.deliverable and lead.tier == LeadTier.SIGNAL), key=rank_key
         )
         icp_ranked = sorted(
-            (lead for lead in leads if lead.verified_people and lead.tier == LeadTier.ICP_ONLY), key=rank_key
+            (lead for lead in leads if lead.deliverable and lead.tier == LeadTier.ICP_ONLY), key=rank_key
         )
         gap = max(0, spec.count - len(qualified))
         icp_only, icp_unneeded = icp_ranked[:gap], icp_ranked[gap:]
-        no_contact = [lead for lead in leads if not lead.verified_people]
+        no_contact = [lead for lead in leads if not lead.deliverable]
         deliver = qualified + icp_only + no_contact
         if summary.status == JobStatus.DONE and len(qualified) + len(icp_only) < spec.count:
             summary.status = JobStatus.DONE_WITH_SHORTFALL

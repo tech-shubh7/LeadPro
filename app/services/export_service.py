@@ -10,6 +10,7 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from app.config.constants import WORLDWIDE
 from app.models.enums import LeadTier
 from app.schemas.job_spec_schema import JobSpec
 from app.services.contact_service import DecisionMaker
@@ -19,6 +20,9 @@ from app.services.research_service import ResearchBundle
 from app.services.scoring_service import Score, fresh_signals
 from app.services.signal_intelligence_service import TIER_ORDER, SignalStack
 
+SIGNAL_COLUMNS = [
+    f"signal_{i}_{col}" for i in (1, 2, 3) for col in ("type", "detail", "date", "date_basis", "source_url")
+]
 COMPANY_COLUMNS = [
     "lead_id",
     "lead_tier",
@@ -50,11 +54,7 @@ COMPANY_COLUMNS = [
     "outreach_allowed",
     "outreach_reason",
     "website_access",
-    *(
-        f"signal_{i}_{col}"
-        for i in (1, 2, 3)
-        for col in ("type", "detail", "date", "date_basis", "source_url")
-    ),
+    *SIGNAL_COLUMNS,
     "why_this_lead",
     "suggested_outreach_angle",
     "risks_or_disqualifiers",
@@ -72,6 +72,26 @@ PERSON_COLUMNS = [
     "person_source_url",
 ]
 DRAFT_COLUMNS = ["email_subject", "email_body"]
+# Signals-only runs: one row per company, the prospect and the dated reason to call now. Nothing about people,
+# so the sheet carries no personal data. Identity columns (domain, legal name, registry id) are what a CRM or
+# a contact tool (Apollo, Hunter) matches on.
+SIGNALS_ONLY_COLUMNS = [
+    "rank",
+    "company_name",
+    "company_domain",
+    "website_url",
+    "country",
+    "confidence_tier",
+    "signal_summary",
+    *SIGNAL_COLUMNS,
+    "why_this_lead",
+    "description",
+    "legal_name",
+    "registry_id",
+    "total_score",
+    "lead_id",
+    "data_freshness_date",
+]
 ICP_SHEET = "ICP fit - no strong signal"
 NO_CONTACT_COLUMNS = [*COMPANY_COLUMNS, "decision_makers_found_without_verified_email", "why_no_contact"]
 
@@ -111,10 +131,17 @@ class LeadResult:
     drafts: dict[tuple[str, str], Draft] = field(default_factory=dict)
     company_id: int | None = None
     contact_ids: dict[tuple[str, str], int] = field(default_factory=dict)  # set once persisted
+    contacts_wanted: bool = True  # False in a signals-only run: the company + signal is the whole lead
 
     @property
     def verified_people(self) -> list[DecisionMaker]:
         return [p for p in self.people if p.email]
+
+    @property
+    def deliverable(self) -> bool:
+        """Complete for its run's output mode. The one rule the run, revalidation, persistence and export
+        all share, so a lead counted as ready is always the lead on the Leads sheet."""
+        return bool(self.verified_people) or not self.contacts_wanted
 
 
 def rank_key(lead: LeadResult) -> tuple[int, int]:
@@ -141,7 +168,8 @@ def company_row(lead: LeadResult, rank: int, spec: JobSpec, today: date) -> dict
         "legal_name": lead.registry.get("legal_name", ""),
         "company_domain": b.domain,
         "website_url": b.homepage.final_url if b.homepage else "",
-        "country": spec.countries[0],
+        # A worldwide run does not verify each company's country, so none is claimed.
+        "country": "" if spec.countries[0] == WORLDWIDE else spec.countries[0],
         "description": e.description,
         "company_phone": company_phone.e164 if company_phone else "",
         "company_phone_type": company_phone.phone_type.value if company_phone else "",
@@ -243,24 +271,31 @@ def build_rows(
     return lead_rows, icp_rows, nc_rows
 
 
+def signals_only_rows(leads: list[LeadResult], spec: JobSpec, today: date) -> list[dict]:
+    """One row per signal lead, ranked as the run ranked them. ICP-only leads never reach a signals-only
+    run (the spec forbids the tier), and are filtered here as well."""
+    ranked = sorted((lead for lead in leads if lead.tier == LeadTier.SIGNAL), key=rank_key)
+    return [company_row(lead, rank, spec, today) for rank, lead in enumerate(ranked, 1)]
+
+
 def write_outputs(
     leads: list[LeadResult], spec: JobSpec, today: date, out_dir: Path, job_id: int
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    lead_rows, icp_rows, nc_rows = build_rows(leads, spec, today)
-    lead_cols = COMPANY_COLUMNS + PERSON_COLUMNS + (DRAFT_COLUMNS if spec.personalized_email else [])
-    icp_cols = COMPANY_COLUMNS + PERSON_COLUMNS  # no drafts: there is no genuine dated hook to write from
     stem = f"{spec.client.key}_job{job_id}_{today.isoformat()}"
-    paths = {
-        "leads_csv": out_dir / f"{stem}_leads.csv",
-        "no_contact_csv": out_dir / f"{stem}_no_contact.csv",
-        "xlsx": out_dir / f"{stem}.xlsx",
-    }
-    sheets = [("Leads", lead_cols, lead_rows, paths["leads_csv"])]
-    if spec.include_icp_only:
-        paths["icp_only_csv"] = out_dir / f"{stem}_icp_only.csv"
-        sheets.append((ICP_SHEET, icp_cols, icp_rows, paths["icp_only_csv"]))
-    sheets.append(("Good leads - no contact", NO_CONTACT_COLUMNS, nc_rows, paths["no_contact_csv"]))
+    paths = {"leads_csv": out_dir / f"{stem}_leads.csv", "xlsx": out_dir / f"{stem}.xlsx"}
+    if not spec.wants_contacts:
+        sheets = [("Leads", SIGNALS_ONLY_COLUMNS, signals_only_rows(leads, spec, today), paths["leads_csv"])]
+    else:
+        lead_rows, icp_rows, nc_rows = build_rows(leads, spec, today)
+        lead_cols = COMPANY_COLUMNS + PERSON_COLUMNS + (DRAFT_COLUMNS if spec.personalized_email else [])
+        icp_cols = COMPANY_COLUMNS + PERSON_COLUMNS  # no drafts: there is no genuine dated hook to write from
+        paths["no_contact_csv"] = out_dir / f"{stem}_no_contact.csv"
+        sheets = [("Leads", lead_cols, lead_rows, paths["leads_csv"])]
+        if spec.include_icp_only:
+            paths["icp_only_csv"] = out_dir / f"{stem}_icp_only.csv"
+            sheets.append((ICP_SHEET, icp_cols, icp_rows, paths["icp_only_csv"]))
+        sheets.append(("Good leads - no contact", NO_CONTACT_COLUMNS, nc_rows, paths["no_contact_csv"]))
     temporary_paths: dict[str, Path] = {}
     for _, cols, rows, path in sheets:
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -280,7 +315,21 @@ def write_outputs(
             ws.append([safe_cell(r.get(c, "")) for c in cols])
         ws.freeze_panes = "A2"
     ws = wb.create_sheet("Methodology")
-    for line in (
+    for line in _methodology(spec, today):
+        ws.append([safe_cell(line)])
+    xlsx_temporary = paths["xlsx"].with_suffix(".xlsx.tmp")
+    wb.save(xlsx_temporary)
+    temporary_paths[str(paths["xlsx"])] = xlsx_temporary
+    # Publish only fully-written files.  os.replace is atomic on the output
+    # filesystem and keeps an existing deliverable intact until the replacement
+    # is ready.
+    for final in paths.values():
+        os.replace(temporary_paths[str(final)], final)
+    return paths
+
+
+def _methodology(spec: JobSpec, today: date) -> list[str]:
+    common = [
         f"Client: {spec.client.name}",
         f"Ask: {spec.ask}",
         f"Countries: {', '.join(spec.countries)}",
@@ -290,6 +339,23 @@ def write_outputs(
         "date (an old event in a new article), the earlier date is used. Republished reports of one event count once.",
         "Every fact and signal was quoted from a page fetched live in this run and checked by code against that page.",
         "Signal dates come only from article metadata, URL dates, search-result dates or job-posting dates; homepages are never dated.",
+    ]
+    if spec.countries[0] == WORLDWIDE:
+        common.append(
+            "Worldwide run: no company registry or country rules were checked, and the country column is left "
+            "blank because each company's country was not verified."
+        )
+    if not spec.wants_contacts:
+        return [
+            *common,
+            "Signals only: each row is a company and its dated, sourced buying signal. No people were looked up "
+            "and no emails were searched for or stored; find contacts in your own tools (CRM, Apollo, Hunter).",
+            "confidence_tier: strong = asked for a supplier, or two different kinds of demand sign; good = one "
+            "demand sign; weak = budget only (funding, growth). signal_N_source_url is the page the sign was "
+            "quoted from.",
+        ]
+    return [
+        *common,
         "Emails: only addresses confirmed deliverable (valid, not catch-all) are delivered. No guessed emails.",
         "Leads sheet: qualified companies with at least one verified decision-maker email (one row per person).",
         "'Good leads - no contact' sheet: companies that passed every check except a verified decision-maker email.",
@@ -307,17 +373,7 @@ def write_outputs(
         "decision-maker is a current officer of exactly one active company sharing the brand's name; exact_name = the only active "
         "company with exactly the brand name.",
         "outreach_allowed: UK = active company/LLP on Companies House (PECR corporate subscriber); other rules per country.",
-    ):
-        ws.append([safe_cell(line)])
-    xlsx_temporary = paths["xlsx"].with_suffix(".xlsx.tmp")
-    wb.save(xlsx_temporary)
-    temporary_paths[str(paths["xlsx"])] = xlsx_temporary
-    # Publish only fully-written files.  os.replace is atomic on the output
-    # filesystem and keeps an existing deliverable intact until the replacement
-    # is ready.
-    for final in paths.values():
-        os.replace(temporary_paths[str(final)], final)
-    return paths
+    ]
 
 
 def job_files(out_dir: Path, client_key: str, job_id: int) -> list[Path]:

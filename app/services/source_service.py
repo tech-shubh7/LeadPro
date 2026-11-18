@@ -243,6 +243,15 @@ def _employer_key(name: str) -> str:
     return _LEGAL_SUFFIX.sub("", name.lower()) or name.lower()
 
 
+def _linkedin_client() -> LinkedInJobsClient:
+    settings = get_settings()
+    return LinkedInJobsClient(
+        pause_s=settings.linkedin_pause_s,
+        backoff_s=settings.linkedin_backoff_s,
+        backoff_budget_s=settings.linkedin_backoff_budget_s,
+    )
+
+
 async def _board_ads(src: SourceSpec, spec: JobSpec, clients: dict) -> list:
     """Every ad the job boards return for the plan's searches. One board failing (or LinkedIn rate-limiting)
     loses that board's ads only."""
@@ -262,14 +271,26 @@ async def _board_ads(src: SourceSpec, spec: JobSpec, clients: dict) -> list:
             logger.warning("reed search failed, its ads skipped: %s: %s", type(exc).__name__, exc)
     if (linkedin := clients.get("linkedin")) is not None:
         pages = get_settings().linkedin_pages_per_search
-        try:
-            for keywords, location in searches:
-                where = location or COUNTRIES.get(country, country)
-                ads += await linkedin.search(keywords, where, spec.freshness_days, pages)
-        except LinkedInRateLimitedError:
-            logger.warning("linkedin rate-limited: keeping the %d ads found so far", len(ads))
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("linkedin search failed, its ads skipped: %s: %s", type(exc).__name__, exc)
+        found = 0
+        for keywords, location in searches:
+            where = location or COUNTRIES.get(country, country)
+            try:
+                batch = await linkedin.search(keywords, where, spec.freshness_days, pages)
+            except LinkedInRateLimitedError:
+                logger.warning("linkedin closed for this run: keeping the %d ads found so far", found)
+                break
+            except (httpx.HTTPError, ValueError) as exc:  # one failed search loses that search only
+                logger.warning("linkedin search %r failed: %s: %s", keywords, type(exc).__name__, exc)
+                continue
+            ads += batch
+            found += len(batch)
+        logger.info(
+            "linkedin: %d ads from %d searches (%d requests, %d retried)",
+            found,
+            len(searches),
+            getattr(linkedin, "requests", 0),
+            getattr(linkedin, "retries", 0),
+        )
     return ads
 
 
@@ -409,7 +430,7 @@ async def collect_sources(
     clients = {
         **clients,
         **({"reed": ReedClient()} if owns_reed else {}),
-        **({"linkedin": LinkedInJobsClient()} if owns_linkedin else {}),
+        **({"linkedin": _linkedin_client()} if owns_linkedin else {}),
     }
     candidates, spent = [], 0
     try:

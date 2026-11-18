@@ -14,6 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.config.constants import COUNTRIES, WORLDWIDE
 from app.config.settings import get_settings
 from app.exceptions.custom_exceptions import LLMRefusalError
 from app.providers.llm.llm_provider import LLMProvider
@@ -156,7 +157,9 @@ THIRD_PARTY_DOMAINS = frozenset(
     }
 )
 logger = get_logger(__name__)
-GL = {"GB": "uk", "US": "us", "IN": "in"}
+# Google's `gl` (results country). There is no worldwide setting: without one Google answers as for "us",
+# its broadest English index, so a worldwide run says so explicitly instead of falling back to "uk".
+GL = {"GB": "uk", "US": "us", "IN": "in", WORLDWIDE: "us"}
 
 
 # Brands that host pages about other companies under many TLDs and subdomains (glassdoor.be,
@@ -436,7 +439,8 @@ def is_target(t: "HitTriage", spec: JobSpec) -> bool:
 def _spec_context(spec: JobSpec) -> str:
     signals = "\n".join(f"- {s.type}: {s.description}" for s in spec.playbook.signals)
     return (
-        f"Ask: {spec.ask}\nCountry: {spec.countries[0]}\nICP: {spec.icp}\nSignals:\n{signals}\n"
+        f"Ask: {spec.ask}\nCountry: {COUNTRIES.get(spec.countries[0], spec.countries[0])}\nICP: {spec.icp}\n"
+        f"Signals:\n{signals}\n"
         f"Negative signals: {spec.playbook.negative}"
     )
 

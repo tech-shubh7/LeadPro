@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from urllib.parse import urljoin, urlparse
 
 from lxml import html as lxml_html
@@ -75,13 +75,16 @@ def pick_internal_links(page_html: str, base_url: str, domain: str) -> list[str]
 
 
 async def company_news(serper, name: str, gl: str, n: int) -> list:
-    """Targeted searches about one company (multi-source evidence beyond its own website)."""
+    """Targeted searches about one company (multi-source evidence beyond its own website). Links are the
+    real pages, not Google redirects: they are fetched, quoted and shown to the buyer as the source."""
     hits = []
     for q in [f'"{name}"'][:n]:
         for h in await serper.query(q, kind="news", gl=gl, num=10, tbs="qdr:y"):
             if name.lower() in f"{h.title} {h.snippet}".lower():
                 hits.append(h)
-    return hits[:5]
+    hits = hits[:5]
+    links = await asyncio.gather(*(serper.resolve_redirect(h.link) for h in hits))
+    return [replace(h, link=link) for h, link in zip(hits, links, strict=True)]
 
 
 async def research(

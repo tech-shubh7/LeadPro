@@ -15,8 +15,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.config.constants import COUNTRIES, SIGNAL_STRENGTHS
+from app.config.constants import COUNTRIES, SIGNAL_STRENGTHS, WORLDWIDE
 from app.exceptions.custom_exceptions import BadRequestError
+from app.models.enums import OutputMode
 from app.providers.web.page_fetcher import Fetcher
 from app.repositories import client_repository
 from app.schemas.client_profile_schema import ClientFactsOut, ClientProfile
@@ -245,7 +246,8 @@ class PlanOut(BaseModel):
     )
     job_ads_source: DraftedJobAdsSource | None = Field(
         default=None,
-        description="UK buyers only: job-ad searches for companies hiring contractors (see catalog)",
+        description="Job-ad searches for companies hiring for this skill: LinkedIn in any country, plus Reed "
+        "for UK buyers (see catalog)",
     )
     contract_awards_source: DraftedAwardsSource | None = Field(
         default=None,
@@ -283,6 +285,7 @@ class Plan:
     freshness_days: int = 90
     personalized_email: bool = True
     include_icp_only: bool = False
+    output_mode: OutputMode = OutputMode.CONTACTS
     cost_cap_inr: float | None = None
     generated: bool = True
     pages_read: list[str] = field(default_factory=list)
@@ -301,14 +304,19 @@ class Plan:
         return self
 
     def to_spec(self, client_key: str) -> JobSpec:
+        # Signals-only delivers no people: drafts and the no-signal tier do not apply, so they are switched
+        # off here (the operator may have ticked them before choosing the mode). JobSpec rejects the mix.
+        contacts = self.output_mode == OutputMode.CONTACTS
+        drafts = self.personalized_email and contacts
         return JobSpec(
             client=ClientSpec(key=client_key, name=self.client_name, website=self.client_website),
             ask=self.ask,
             countries=[self.country],
             count=self.count,
             freshness_days=self.freshness_days,
-            personalized_email=self.personalized_email,
-            include_icp_only=self.include_icp_only,
+            personalized_email=drafts,
+            include_icp_only=self.include_icp_only and contacts,
+            output_mode=self.output_mode,
             cost_cap_inr=self.cost_cap_inr,
             icp=self.icp,
             # Most searches find no buyer, so the budget has to grow with the ask: ~8 per lead wanted.
@@ -325,7 +333,7 @@ class Plan:
                 why_choose=self.why_choose,
                 signature=self.client_name,
             )
-            if self.personalized_email
+            if drafts
             else None,
         )
 
@@ -440,7 +448,10 @@ def planned_sources(out: "PlanOut", country: str) -> list[dict]:
     eligibility runs after, on the whole plan."""
     sources: list[dict] = []
     if out.job_board_source:
-        sources.append(out.job_board_source.model_dump() | {"type": "ats_jobs"})
+        board = out.job_board_source.model_dump() | {"type": "ats_jobs"}
+        if country == WORLDWIDE:  # a place filter would silently discard postings from everywhere else
+            board["locations"] = []
+        sources.append(board)
     if out.job_ads_source and out.job_ads_source.keywords:  # LinkedIn anywhere; Reed added in the UK
         ads = out.job_ads_source
         sources.append(
@@ -478,7 +489,7 @@ def fallback_plan(
     site_text: str = "",
 ) -> Plan:
     """A generic plan, labelled as such. Honest default: it is a starting point to edit, not research."""
-    where = COUNTRIES.get(country, country)
+    where = "" if country == WORLDWIDE else COUNTRIES.get(country, country)  # worldwide: no place filter
     target = ask.strip() or "company"
     signals = [
         {
@@ -486,7 +497,7 @@ def fallback_plan(
             "description": d,
             "strength": s,
             "kind": k,
-            "queries": [q.format(target=target, country=where) for q in qs],
+            "queries": [q.format(target=target, country=where).strip() for q in qs],
         }
         for t, d, s, k, qs in GENERIC_SIGNALS
     ]
@@ -643,6 +654,15 @@ async def learn_client(
     return brief, site_text
 
 
+def _buyer_market(country: str) -> str:
+    if country == WORLDWIDE:
+        return (
+            "Worldwide: buyers may be in any country. Do not put a country or city name in queries; use "
+            "English wording and international outlets, and leave every job-board location filter empty."
+        )
+    return COUNTRIES.get(country, country)
+
+
 async def draft_plan(
     website: str | None,
     ask: str,
@@ -670,7 +690,7 @@ async def draft_plan(
         return plan.enforce_eligibility()
     data = (
         f"The client's request: {ask}\nHow many companies they want: {count}\n"
-        f"Country the BUYERS should be in: {COUNTRIES.get(country, country)}\n\n"
+        f"Country the BUYERS should be in: {_buyer_market(country)}\n\n"
         f"About the client (verified from its own website):\n{brief.as_text(country)}\n"
         "Only propose channels a company in this position can actually sell through."
     )
@@ -760,6 +780,7 @@ def plan_to_json(plan: Plan) -> dict:
             "note": plan.note,
             "sources": plan.sources,
             "include_icp_only": plan.include_icp_only,
+            "output_mode": plan.output_mode.value,
             "profile": plan.profile.model_dump(),
             "where_to_look": plan.where_to_look,
             "exclusions": plan.exclusions,
@@ -790,6 +811,7 @@ def plan_from_job(job) -> Plan:
         freshness_days=job.freshness_days,
         personalized_email=job.personalized_email,
         include_icp_only=bool(intake.get("include_icp_only")),
+        output_mode=stored_output_mode(job),
         cost_cap_inr=job.cost_cap_inr,
         generated=bool(intake.get("generated", True)),
         pages_read=intake.get("pages_read") or [],
@@ -798,6 +820,24 @@ def plan_from_job(job) -> Plan:
         exclusions=intake.get("exclusions") or [],
         where_to_look=intake.get("where_to_look", ""),
     )
+
+
+def stored_output_mode(job) -> OutputMode:
+    """The output mode chosen at intake. Jobs from before the mode existed delivered contacts."""
+    raw = ((job.icp or {}).get("intake") or {}).get("output_mode")
+    try:
+        return OutputMode(raw) if raw else OutputMode.CONTACTS
+    except ValueError:
+        logger.warning("job %s has unknown output_mode %r; using contacts", getattr(job, "id", "?"), raw)
+        return OutputMode.CONTACTS
+
+
+def parse_output_mode(value: str) -> OutputMode | None:
+    """A submitted form value as an OutputMode, or None when it is not one (a 400, never a silent default)."""
+    try:
+        return OutputMode((value or OutputMode.CONTACTS.value).strip())
+    except ValueError:
+        return None
 
 
 # --- the two operator forms -----------------------------------------------------------------------
@@ -811,6 +851,7 @@ def validate_intake_form(
     freshness_days: int,
     cost_cap_inr: float,
     client_name: str = "",
+    output_mode: str = OutputMode.CONTACTS.value,
 ) -> dict[str, str]:
     """Field -> message for everything wrong with a new-run request; empty when it can be drafted."""
     errors: dict[str, str] = {}
@@ -828,6 +869,8 @@ def validate_intake_form(
         errors["cost_cap_inr"] = f"Between ₹1 and ₹{MAX_COST_CAP_INR:,.0f}."
     if country.upper() not in COUNTRIES:
         errors["country"] = "Pick a country from the list."
+    if parse_output_mode(output_mode) is None:
+        errors["output_mode"] = "Pick what to deliver from the list."
     if not website.strip() and not client_name.strip():
         errors["website"] = (
             "Give the client's website (best), or at least the client's name under More options."
@@ -853,6 +896,7 @@ class ReviewedPlanForm:
     cost_cap_inr: float = 0.0
     personalized_email: bool = False
     include_icp_only: bool = False
+    output_mode: OutputMode = OutputMode.CONTACTS
     industries: str = ""
     geographies: str = ""
     size_band: str = ""
@@ -920,6 +964,7 @@ def build_reviewed_spec(job, form: ReviewedPlanForm) -> JobSpec:
         freshness_days=form.freshness_days,
         personalized_email=form.personalized_email,
         include_icp_only=form.include_icp_only,
+        output_mode=form.output_mode,
         cost_cap_inr=form.cost_cap_inr or job.cost_cap_inr,
         profile=ClientProfile(**(intake.get("profile") or {})),
     ).enforce_eligibility()
@@ -930,6 +975,6 @@ def build_reviewed_spec(job, form: ReviewedPlanForm) -> JobSpec:
         raise BadRequestError(f"The plan is not runnable: {first['loc'][-1]} — {first['msg']}") from exc
     if not spec.playbook.signals:
         raise BadRequestError("Keep at least one signal with a search query.")
-    if not spec.playbook.buyer_titles:
+    if spec.wants_contacts and not spec.playbook.buyer_titles:  # signals-only looks nobody up
         raise BadRequestError("Name at least one buyer title to look for.")
     return spec

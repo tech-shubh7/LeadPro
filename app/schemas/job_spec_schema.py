@@ -6,6 +6,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.models.enums import OutputMode
+
 
 class ClientSpec(BaseModel):
     key: str  # stable slug; never-repeat suppression is per client key
@@ -132,6 +134,9 @@ class JobSpec(BaseModel):
     )  # structured public datasets, tried before web search
     sources_only: bool = False  # seeds + sources only; skip general web-search discovery
     max_search_queries: int = Field(default=30, ge=1, le=300)  # discovery budget (planned + resolution)
+    # SIGNALS_ONLY delivers company + dated buying signal and nothing about people: no contact lookup, no
+    # paid email finders, no personal data stored, no drafts. Contacts come from the client's own tools.
+    output_mode: OutputMode = OutputMode.CONTACTS
 
     @field_validator("countries")
     @classmethod
@@ -139,6 +144,23 @@ class JobSpec(BaseModel):
         if len(v) != 1:
             raise ValueError("one country per job for now (run separate jobs per country)")
         return [c.upper() for c in v]
+
+    @model_validator(mode="after")
+    def _signals_only_is_consistent(self) -> "JobSpec":
+        """A signals-only run has no people to write to and delivers only companies WITH a dated signal,
+        so drafts and the no-signal ICP tier contradict it. Rejected here rather than silently dropped."""
+        if self.output_mode == OutputMode.SIGNALS_ONLY:
+            if self.personalized_email:
+                raise ValueError("signals_only delivers no contacts, so personalized_email must be off")
+            if self.include_icp_only:
+                raise ValueError(
+                    "signals_only delivers only companies with a dated signal: include_icp_only must be off"
+                )
+        return self
+
+    @property
+    def wants_contacts(self) -> bool:
+        return self.output_mode == OutputMode.CONTACTS
 
 
 def load_job(path: Path) -> JobSpec:

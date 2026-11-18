@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -35,7 +36,31 @@ def clean_query(q: str) -> str:
 
 
 BASE_URL = "https://google.serper.dev"
-GOOGLE_REDIRECT = "https://www.google.com/goto?"
+# Search items can link through Google instead of to the page. Both forms answer a 302 to the real page
+# (checked live 2026-11-18: /url? was 232 of 319 redirect links in the search cache, and was missed).
+GOOGLE_REDIRECTS = ("https://www.google.com/goto?", "https://www.google.com/url?")
+
+
+def is_search_redirect(link: str) -> bool:
+    return link.startswith(GOOGLE_REDIRECTS)
+
+
+def _real_page(location: str | None) -> str | None:
+    """The redirect's target if it is a real web page, not another Google page (consent, sorry, search)."""
+    if not location:
+        return None
+    parsed = urlparse(location)
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme not in ("http", "https")
+        or not host
+        or host == "google.com"
+        or host.endswith(".google.com")
+    ):
+        return None
+    return location
+
+
 _SECTION = {"search": "organic", "news": "news"}
 
 
@@ -117,19 +142,21 @@ class SerperClient:
         ]
 
     async def resolve_redirect(self, link: str) -> str:
-        """Search items can be google.com/goto links; the 302 Location is the real page.
-        Resolved only for links actually used as evidence, two at a time, with one retry."""
-        if not link.startswith(GOOGLE_REDIRECT):
+        """A Google redirect link's real page (its 302 Location). Resolved only for links actually used as
+        evidence, two at a time, with one retry. Unresolvable links are returned as they are (they still
+        open in a browser) and logged, so a dead end is visible rather than silent."""
+        if not is_search_redirect(link):
             return link
         async with self._redirect_sem:
             for attempt in range(2):
                 try:
                     resp = await self.client.get(link, follow_redirects=False)
-                    if location := resp.headers.get("location"):
-                        return location
+                    if target := _real_page(resp.headers.get("location")):
+                        return target
                 except httpx.HTTPError:
                     pass
                 await asyncio.sleep(1.5 * (attempt + 1))
+        logger.info("search redirect left unresolved: %s", link[:80])
         return link
 
     async def aclose(self) -> None:

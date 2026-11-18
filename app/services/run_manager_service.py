@@ -18,13 +18,13 @@ from sqlalchemy import select
 from app.config.database import session_scope
 from app.config.settings import get_settings
 from app.models import Job
-from app.models.enums import JobStatus
+from app.models.enums import JobStatus, OutputMode
 from app.providers.llm.llm_factory import create_llm, has_credentials
 from app.providers.llm.llm_provider import LLMProvider
 from app.providers.web.page_fetcher import Fetcher
 from app.repositories import run_queue_repository
 from app.schemas.job_spec_schema import JobSpec
-from app.services.intake_service import draft_plan, plan_from_job, plan_to_json
+from app.services.intake_service import draft_plan, plan_from_job, plan_to_json, stored_output_mode
 from app.utils.cost_tracker import CostTracker
 from app.utils.logger import get_logger
 from app.utils.normalize import normalize_domain
@@ -111,6 +111,7 @@ def create_draft_job(
     personalized_email: bool,
     include_icp_only: bool,
     cost_cap_inr: float,
+    output_mode: OutputMode = OutputMode.CONTACTS,
 ) -> int:
     """Creates the job row in `researching_client` so the plan has somewhere to live before review."""
     with session_scope() as s:
@@ -124,7 +125,7 @@ def create_draft_job(
             freshness_days=freshness_days,
             personalized_email=personalized_email,
             cost_cap_inr=cost_cap_inr,
-            icp={"intake": {"include_icp_only": include_icp_only}},
+            icp={"intake": {"include_icp_only": include_icp_only, "output_mode": output_mode.value}},
             status=JobStatus.RESEARCHING_CLIENT,
         )
         s.add(job)
@@ -142,6 +143,7 @@ async def draft(job_id: int) -> None:
         country, name, cap = (job.target_countries or ["GB"])[0], job.client_name, job.cost_cap_inr
         key = job.client_key
         icp_only = bool((job.icp or {}).get("intake", {}).get("include_icp_only"))
+        output_mode = stored_output_mode(job)
         freshness, emails = job.freshness_days, job.personalized_email
     cost = CostTracker(cap)
     fetcher = Fetcher()
@@ -149,6 +151,7 @@ async def draft(job_id: int) -> None:
         plan = await draft_plan(website, ask, count, country, _llm(cost), fetcher, name, client_key=key)
         plan.freshness_days, plan.personalized_email = freshness, emails
         plan.include_icp_only, plan.cost_cap_inr = icp_only, cap
+        plan.output_mode = output_mode
         with session_scope() as s:
             if job := s.get(Job, job_id):
                 job.icp = plan_to_json(plan)

@@ -12,12 +12,17 @@ from app.config.constants import SIGNAL_STRENGTHS
 from app.config.database import DbSession
 from app.config.settings import get_settings
 from app.config.templates import render
-from app.exceptions.custom_exceptions import NotFoundError
+from app.exceptions.custom_exceptions import BadRequestError, NotFoundError
 from app.middlewares.csrf import check_csrf
 from app.models.enums import JobStatus
 from app.repositories import client_repository, console_repository
 from app.services import run_manager_service as runs
-from app.services.intake_service import ReviewedPlanForm, build_reviewed_spec, validate_intake_form
+from app.services.intake_service import (
+    ReviewedPlanForm,
+    build_reviewed_spec,
+    parse_output_mode,
+    validate_intake_form,
+)
 
 router = APIRouter(prefix="/new", tags=["New run"])
 # Repeated form fields (one per signal on the review page); empty when none were sent.
@@ -58,6 +63,7 @@ async def create_run(
     freshness_days: Annotated[int, Form()] = 90,
     personalized_email: Annotated[bool, Form()] = False,
     include_icp_only: Annotated[bool, Form()] = False,
+    output_mode: Annotated[str, Form()] = "contacts",
     cost_cap_inr: Annotated[float, Form()] = 0.0,
     refresh_client: Annotated[bool, Form()] = False,
     csrf: Annotated[str, Form()] = "",
@@ -74,9 +80,12 @@ async def create_run(
         "freshness_days": freshness_days,
         "personalized_email": personalized_email,
         "include_icp_only": include_icp_only,
+        "output_mode": output_mode,
         "cost_cap_inr": cap,
     }
-    if errors := validate_intake_form(website, ask, count, country, freshness_days, cap, client_name):
+    if errors := validate_intake_form(
+        website, ask, count, country, freshness_days, cap, client_name, output_mode
+    ):
         return _intake_page(request, form, errors, status_code=400)
     if runs.active_drafts() >= runs.MAX_CONCURRENT_DRAFTS:
         busy = {"website": "A few plans are already being drafted. Try again in a minute."}
@@ -94,6 +103,7 @@ async def create_run(
         personalized_email,
         include_icp_only,
         cap,
+        parse_output_mode(output_mode),  # validated above
     )
     runs.start_draft(job_id)
     return _see_other(f"/new/{job_id}")
@@ -148,6 +158,7 @@ async def start(
     cost_cap_inr: Annotated[float, Form()] = 0.0,
     personalized_email: Annotated[bool, Form()] = False,
     include_icp_only: Annotated[bool, Form()] = False,
+    output_mode: Annotated[str, Form()] = "contacts",
     industries: Annotated[str, Form()] = "",
     geographies: Annotated[str, Form()] = "",
     size_band: Annotated[str, Form()] = "",
@@ -172,6 +183,9 @@ async def start(
         raise NotFoundError()
     if runs.is_busy(job_id) or job.status != JobStatus.AWAITING_ICP_REVIEW:
         return _see_other(f"/jobs/{job_id}")  # already started (double click, back button): show it
+    mode = parse_output_mode(output_mode)
+    if mode is None:
+        raise BadRequestError("Pick what to deliver: companies with signals, or with verified contacts.")
     form = ReviewedPlanForm(
         ask=ask,
         count=count,
@@ -179,6 +193,7 @@ async def start(
         cost_cap_inr=cost_cap_inr,
         personalized_email=personalized_email,
         include_icp_only=include_icp_only,
+        output_mode=mode,
         industries=industries,
         geographies=geographies,
         size_band=size_band,

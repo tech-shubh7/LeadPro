@@ -30,6 +30,13 @@ class LeadTier(StrEnum):
     ICP_ONLY = "icp_only"  # fits the ICP (opt-in tier); no current public signal was found
 
 
+class OutputMode(StrEnum):
+    """What a run delivers per lead."""
+
+    CONTACTS = "contacts"  # company + signal + verified decision-maker emails (paid finders, PII stored)
+    SIGNALS_ONLY = "signals_only"  # company + dated, sourced buying signal; no people, no emails, no drafts
+
+
 class EvidenceKind(StrEnum):
     FIRMOGRAPHIC = "firmographic"
     SIGNAL = "signal"

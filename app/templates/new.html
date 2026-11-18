@@ -52,6 +52,14 @@
           {% endfor %}
         </select>
       </label>
+      <label class="field {{ 'bad' if errors.output_mode }}">
+        <span class="lbl">Deliver</span>
+        <select name="output_mode">
+          <option value="signals_only" {{ 'selected' if form.output_mode == 'signals_only' }}>Companies + buying signal</option>
+          <option value="contacts" {{ 'selected' if (form.output_mode or 'contacts') == 'contacts' }}>Companies + signal + verified contacts</option>
+        </select>
+        {% if errors.output_mode %}<span class="err">{{ errors.output_mode }}</span>{% endif %}
+      </label>
       <label class="field {{ 'bad' if errors.cost_cap_inr }}">
         <span class="lbl">Spend cap (₹)</span>
         <input type="number" name="cost_cap_inr" min="1" step="1" value="{{ (form.cost_cap_inr or default_cap) | round | int }}" required>
@@ -80,12 +88,12 @@
       <label class="check">
         <input type="checkbox" name="personalized_email" value="true" {{ 'checked' if form.personalized_email }}>
         <span><span class="lbl">Write an outreach email per contact</span>
-          <span class="help">Opens with that company's dated signal. Code rejects a draft that invents a fact or number.</span></span>
+          <span class="help">Opens with that company's dated signal. Code rejects a draft that invents a fact or number. Not used when delivering companies + signal only.</span></span>
       </label>
       <label class="check">
         <input type="checkbox" name="include_icp_only" value="true" {{ 'checked' if form.include_icp_only }}>
         <span><span class="lbl">Top up with strong-fit companies that show no signal</span>
-          <span class="help">Delivered on a separate, clearly labelled sheet. No outreach drafts.</span></span>
+          <span class="help">Delivered on a separate, clearly labelled sheet. No outreach drafts. Not used when delivering companies + signal only.</span></span>
       </label>
     </details>
   </div>

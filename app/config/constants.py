@@ -1,7 +1,9 @@
 """Application-wide constants shared by several layers."""
 
 # Countries a run can target: ISO code -> display name.
-COUNTRIES = {"GB": "United Kingdom", "US": "United States", "IN": "India"}
+# Not an ISO code: "WW" marks a worldwide run (no registry, no country pack, outreach rules unverified).
+WORLDWIDE = "WW"
+COUNTRIES = {"GB": "United Kingdom", "US": "United States", "IN": "India", WORLDWIDE: "Worldwide"}
 
 # Buying-signal strengths, strongest first.
 SIGNAL_STRENGTHS = ("very_high", "high", "medium", "low")

@@ -54,27 +54,103 @@ def test_cards_parse_with_exact_dates_and_undated_cards_are_skipped():
     assert parse_cards("") == []
 
 
+class FakeClock:
+    """Records waits instead of sleeping, so backoff is tested without real time passing."""
+
+    def __init__(self):
+        self.waits: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.waits.append(seconds)
+
+
+def _client(clock: FakeClock, **kw) -> LinkedInJobsClient:
+    return LinkedInJobsClient(pause_s=0, sleep=clock, **kw)
+
+
 @respx.mock
-def test_search_asks_for_the_freshness_window_and_a_429_stops_linkedin_for_the_run():
+def test_search_asks_for_the_freshness_window_and_a_429_burst_is_waited_out():
+    """Measured live: 429s come in short bursts that a 15 s wait clears. The request is retried, not lost."""
     route = respx.get(SEARCH_URL).mock(
-        side_effect=[httpx.Response(200, text=card(1, "Dev", "A", "a")), httpx.Response(429)]
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(200, text=card(1, "Dev", "A", "a")),
+        ]
+    )
+    clock = FakeClock()
+
+    async def go():
+        li = _client(clock)
+        try:
+            return await li.search("web developer", "United Kingdom", days=30), li
+        finally:
+            await li.aclose()
+
+    ads, li = asyncio.run(go())
+    assert len(ads) == 1
+    assert route.calls[0].request.url.params["f_TPR"] == "r2592000"
+    assert [w for w in clock.waits if w] == [15.0, 30.0]  # exponential backoff
+    assert (li.retries, li.blocked) == (2, False)
+
+
+@respx.mock
+def test_a_server_error_or_dropped_connection_is_retried_too():
+    respx.get(SEARCH_URL).mock(
+        side_effect=[
+            httpx.Response(503),
+            httpx.ConnectError("reset"),
+            httpx.Response(200, text=card(1, "Dev", "A", "a")),
+        ]
     )
 
     async def go():
-        li = LinkedInJobsClient(pause_s=0)
+        li = _client(FakeClock())
         try:
-            first = await li.search("web developer", "United Kingdom", days=30)
-            with pytest.raises(LinkedInRateLimitedError):
-                await li.search("web developer", "United Kingdom", days=30)
-            with pytest.raises(LinkedInRateLimitedError):  # no more requests once blocked
-                await li.search("other", "United Kingdom", days=30)
-            return first
+            return await li.search("web developer", "United Kingdom", days=30)
         finally:
             await li.aclose()
 
     assert len(asyncio.run(go())) == 1
-    assert route.calls[0].request.url.params["f_TPR"] == "r2592000"
-    assert route.call_count == 2
+
+
+@respx.mock
+def test_linkedin_closes_for_the_run_when_it_keeps_refusing():
+    route = respx.get(SEARCH_URL).mock(return_value=httpx.Response(429))
+    clock = FakeClock()
+
+    async def go():
+        li = _client(clock, max_retries=3)
+        try:
+            with pytest.raises(LinkedInRateLimitedError):
+                await li.search("web developer", "United Kingdom", days=30)
+            with pytest.raises(LinkedInRateLimitedError):  # no more requests once closed
+                await li.search("other", "United Kingdom", days=30)
+        finally:
+            await li.aclose()
+
+    asyncio.run(go())
+    assert route.call_count == 4  # first try + 3 retries, then nothing more
+    assert [w for w in clock.waits if w] == [15.0, 30.0, 60.0]
+
+
+@respx.mock
+def test_the_runs_backoff_budget_caps_total_waiting():
+    """However many requests hit 429, the run never waits more than its budget in total."""
+    route = respx.get(SEARCH_URL).mock(return_value=httpx.Response(429))
+    clock = FakeClock()
+
+    async def go():
+        li = _client(clock, backoff_budget_s=40)
+        try:
+            with pytest.raises(LinkedInRateLimitedError):
+                await li.search("web developer", "United Kingdom", days=30)
+        finally:
+            await li.aclose()
+
+    asyncio.run(go())
+    assert sum(clock.waits) <= 40
+    assert route.call_count == 2  # 15 s fits the budget, the next 30 s would not
 
 
 SPEC = JobSpec.model_validate(

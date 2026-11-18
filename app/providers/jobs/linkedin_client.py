@@ -7,12 +7,18 @@ GET https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{id}  -> the ad's fu
 
 These are the pages anyone sees without an account; no login, cookies or profile data are touched, and the
 client identifies itself honestly. Use is the operator's decision (LinkedIn's terms restrict automated
-access), so it can be switched off with LINKEDIN_JOBS_ENABLED=false. Requests go one at a time with a pause,
-and a 429 stops LinkedIn for the rest of the run instead of retrying into a block. Checked live 2026-11-17.
+access), so it can be switched off with LINKEDIN_JOBS_ENABLED=false.
+
+Pacing (measured live 2026-11-18): LinkedIn answers 429 in short bursts with no Retry-After header, and a
+15 s wait cleared every one; at a ~4 s pace 20 searches then ran clean. So requests go one at a time with a
+jittered pause, a 429 (or a 5xx / network error) is retried after an exponential backoff, and the run's total
+backoff is capped: once spent, LinkedIn is closed for the run instead of retrying into a real block.
 """
 
 import asyncio
+import random
 import re
+from collections.abc import Awaitable, Callable
 from datetime import date
 from urllib.parse import urlparse
 
@@ -31,8 +37,11 @@ MAX_TEXT_CHARS = 2500
 _JOB_ID = re.compile(r"jobPosting:(\d+)")
 
 
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
 class LinkedInRateLimitedError(Exception):
-    """LinkedIn answered 429: stop asking for this run."""
+    """LinkedIn kept refusing past the run's backoff budget: stop asking for this run."""
 
 
 def _text(node, xpath: str) -> str:
@@ -91,27 +100,66 @@ def parse_description(page: str) -> str:
 
 
 class LinkedInJobsClient:
-    def __init__(self, client: httpx.AsyncClient | None = None, pause_s: float = 2.5):
+    def __init__(
+        self,
+        client: httpx.AsyncClient | None = None,
+        pause_s: float = 4.0,
+        backoff_s: float = 15.0,
+        max_retries: int = 3,
+        backoff_budget_s: float = 300.0,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ):
         self.client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(20, connect=5), headers={"User-Agent": "LeadPro/0.1 (+research)"}
         )
-        self.pause_s = pause_s
+        self.pause_s, self.backoff_s, self.max_retries = pause_s, backoff_s, max_retries
+        self.backoff_budget_s = backoff_budget_s
+        self._sleep = sleep  # injectable so tests do not wait in real time
         self._lock = asyncio.Lock()  # one request at a time, spaced out
         self.blocked = False
+        self.backoff_spent_s = 0.0
+        self.requests = 0
+        self.retries = 0
+
+    async def _pause(self) -> None:
+        await self._sleep(self.pause_s * random.uniform(0.75, 1.25))
 
     async def _get(self, url: str, params: dict | None = None) -> str:
         if self.blocked:
             raise LinkedInRateLimitedError("already rate-limited this run")
+        # The lock is held through the backoff: every request shares LinkedIn's limit, so none may jump in.
         async with self._lock:
-            resp = await self.client.get(url, params=params)
-            await asyncio.sleep(self.pause_s)
-        if resp.status_code == 429:
-            self.blocked = True
-            raise LinkedInRateLimitedError("LinkedIn returned 429")
-        if resp.status_code in (400, 404):
-            return ""  # past the last page, or an ad taken down
-        resp.raise_for_status()
-        return resp.text
+            for attempt in range(self.max_retries + 1):
+                if self.blocked:  # another request spent the budget while this one queued
+                    raise LinkedInRateLimitedError("already rate-limited this run")
+                why = ""
+                try:
+                    resp = await self.client.get(url, params=params)
+                    self.requests += 1
+                except (httpx.TimeoutException, httpx.TransportError) as exc:
+                    resp, why = None, type(exc).__name__
+                await self._pause()
+                if resp is not None and resp.status_code not in RETRYABLE_STATUSES:
+                    if resp.status_code in (400, 404):
+                        return ""  # past the last page, or an ad taken down
+                    resp.raise_for_status()
+                    return resp.text
+                why = why or f"HTTP {resp.status_code}"
+                wait = self.backoff_s * 2**attempt
+                if attempt == self.max_retries or self.backoff_spent_s + wait > self.backoff_budget_s:
+                    self.blocked = True
+                    logger.warning(
+                        "linkedin: %s after %d tries; closed for this run (%.0fs of backoff used)",
+                        why,
+                        attempt + 1,
+                        self.backoff_spent_s,
+                    )
+                    raise LinkedInRateLimitedError(f"LinkedIn kept refusing ({why})")
+                self.backoff_spent_s += wait
+                self.retries += 1
+                logger.info("linkedin: %s, waiting %.0fs before retrying", why, wait)
+                await self._sleep(wait)
+        raise AssertionError("unreachable")  # the loop always returns or raises
 
     async def search(self, keywords: str, location: str, days: int, pages: int = 2) -> list[JobAd]:
         """Ads posted in the last `days` days, newest pages first. Stops early at an empty page."""

@@ -194,13 +194,19 @@
         <input type="number" name="freshness_days" min="1" max="365" value="{{ plan.freshness_days }}"></label>
       <label class="field"><span class="lbl">Stop spending at (₹)</span>
         <input type="number" name="cost_cap_inr" min="1" value="{{ plan.cost_cap_inr | round | int }}"></label>
+      <label class="field"><span class="lbl">Deliver</span>
+        <select name="output_mode">
+          <option value="signals_only" {{ 'selected' if plan.output_mode == 'signals_only' }}>Companies + buying signal</option>
+          <option value="contacts" {{ 'selected' if plan.output_mode == 'contacts' }}>Companies + signal + verified contacts</option>
+        </select>
+        <span class="help">Signal only: no people or emails are looked up; find contacts in your CRM, Apollo or Hunter.</span></label>
       <label class="check">
         <input type="checkbox" name="personalized_email" value="true" {{ 'checked' if plan.personalized_email }}>
-        <span><span class="lbl">Write a first email for each person</span><span class="help">Based on their buying sign.</span></span>
+        <span><span class="lbl">Write a first email for each person</span><span class="help">Based on their buying sign. Contacts mode only.</span></span>
       </label>
       <label class="check">
         <input type="checkbox" name="include_icp_only" value="true" {{ 'checked' if plan.include_icp_only }}>
-        <span><span class="lbl">Also include good-fit companies with no buying sign</span><span class="help">Listed separately, so you always know which is which.</span></span>
+        <span><span class="lbl">Also include good-fit companies with no buying sign</span><span class="help">Listed separately, so you always know which is which. Contacts mode only.</span></span>
       </label>
     </div>
     <div class="card-foot">

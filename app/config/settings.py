@@ -21,8 +21,13 @@ class Settings(BaseSettings):
     # terms restrict automated access, so it can be turned off here. Pages per search and ads read in full
     # per run are capped to stay a light, polite user.
     linkedin_jobs_enabled: bool = True
-    linkedin_pages_per_search: int = 2
+    linkedin_pages_per_search: int = 3  # 10 ads a page: 5 keywords x 3 pages = up to 150 ads
     linkedin_max_descriptions: int = 30
+    # Pacing measured live 2026-11-18: 429s come in short bursts and a 15 s wait cleared each one. The
+    # backoff doubles per retry (15, 30, 60 s) and the run's total backoff is capped, then LinkedIn closes.
+    linkedin_pause_s: float = 4.0
+    linkedin_backoff_s: float = 15.0
+    linkedin_backoff_budget_s: float = 300.0
     # Search providers in order; the next is used only when one errors. Serper (Google) first for result
     # quality and dates; TinyFish search as the free fallback. Providers without a key are skipped.
     search_provider_order: list[str] = ["serper", "tinyfish"]

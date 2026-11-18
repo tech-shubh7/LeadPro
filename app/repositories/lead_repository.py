@@ -349,7 +349,9 @@ def save_lead(session: Session, job: Job, lead: LeadResult, country: str) -> dic
         "alive_proofs": lead.alive_proofs,
         "outreach_allowed": lead.outreach_allowed,
         "outreach_reason": lead.outreach_reason,
-        "status": LeadStatus.QUALIFIED if lead.verified_people else LeadStatus.QUALIFIED_NO_CONTACT,
+        # `deliverable` is the output mode's own rule: in a signals-only run no contact is wanted, so a
+        # company with its signal is fully qualified, not "qualified, no contact".
+        "status": LeadStatus.QUALIFIED if lead.deliverable else LeadStatus.QUALIFIED_NO_CONTACT,
         "lead_tier": lead.tier,
         "confidence_tier": lead.stack.tier or None,
         "signal_summary": lead.stack.summary or None,

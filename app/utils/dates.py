@@ -121,6 +121,17 @@ def parse_relative_date(
     )
 
 
+def search_window(days: int) -> str:
+    """Google's narrowest time filter that still covers `days` (past day / week / month / year). Searching a
+    month for a 2-day window paid for results that were then thrown away; the exact window is still enforced
+    afterwards on code-trusted dates."""
+    if days <= 1:
+        return "qdr:d"
+    if days <= 7:
+        return "qdr:w"
+    return "qdr:m" if days <= 31 else "qdr:y"
+
+
 def within_window(d: date, today: date, days: int) -> bool:
     return today - timedelta(days=days) <= d <= today
 

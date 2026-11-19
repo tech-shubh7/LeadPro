@@ -22,6 +22,7 @@ from app.providers.llm.llm_provider import LLMProvider
 from app.providers.search.serper_client import SearchHit, SerperClient
 from app.schemas.job_spec_schema import JobSpec
 from app.services.source_service import collect_sources
+from app.utils.dates import search_window
 from app.utils.logger import get_logger
 from app.utils.normalize import normalize_domain
 
@@ -694,7 +695,7 @@ async def _discover(
 ) -> list[Candidate]:
     settings = get_settings()
     gl = GL.get(spec.countries[0], "uk")
-    tbs = "qdr:m" if spec.freshness_days <= 31 else "qdr:y"  # coarse; exact window enforced on trusted dates
+    tbs = search_window(spec.freshness_days)  # coarse; the exact window is enforced on trusted dates
     budget = spec.max_search_queries
     reserve = min(RESOLVE_RESERVE, max(1, limit), budget // 3)
     by_name: dict[str, Candidate] = {}

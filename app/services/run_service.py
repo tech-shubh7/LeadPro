@@ -64,6 +64,7 @@ from app.services.signal_intelligence_service import (
 )
 from app.services.source_service import board_checker_for
 from app.utils.cost_tracker import CostTracker, UsageLine, usage_tags
+from app.utils.dates import search_window
 from app.utils.logger import get_logger
 from app.utils.normalize import normalize_domain
 
@@ -211,6 +212,7 @@ async def process_candidate(
             gl=GL.get(pack.code, "uk"),
             news_queries=settings.company_news_queries,
             wants_people=spec.wants_contacts,
+            news_tbs=search_window(spec.freshness_days),
         )
     if not bundle.website_live and not bundle.website_blocked:
         raise CandidateRejectedError("website unreachable")

@@ -84,12 +84,12 @@ def internal_link_roles(page_html: str, base_url: str, domain: str) -> dict[str,
     return best
 
 
-async def company_news(serper, name: str, gl: str, n: int) -> list:
+async def company_news(serper, name: str, gl: str, n: int, tbs: str = "qdr:y") -> list:
     """Targeted searches about one company (multi-source evidence beyond its own website). Links are the
     real pages, not Google redirects: they are fetched, quoted and shown to the buyer as the source."""
     hits = []
     for q in [f'"{name}"'][:n]:
-        for h in await serper.query(q, kind="news", gl=gl, num=10, tbs="qdr:y"):
+        for h in await serper.query(q, kind="news", gl=gl, num=10, tbs=tbs):
             if name.lower() in f"{h.title} {h.snippet}".lower():
                 hits.append(h)
     hits = hits[:5]
@@ -105,6 +105,7 @@ async def research(
     gl: str = "uk",
     news_queries: int = 0,
     wants_people: bool = True,
+    news_tbs: str = "qdr:y",
 ) -> ResearchBundle:
     homepage = None
     attempts = []
@@ -131,7 +132,7 @@ async def research(
         known = {h.link for h in bundle.seed_hits}
         bundle.seed_hits += [
             h
-            for h in await company_news(serper, candidate.name_hint, gl, news_queries)
+            for h in await company_news(serper, candidate.name_hint, gl, news_queries, news_tbs)
             if h.link not in known
         ]
 

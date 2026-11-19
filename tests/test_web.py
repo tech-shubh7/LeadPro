@@ -218,6 +218,7 @@ def test_progress_endpoint_matches_the_stored_rows(clean_db, client):
         "candidates": 9,
         "qualified": 2,
         "icp_only": 1,
+        "watchlist": 0,
         "no_contact": 1,
         "rejected": 1,
         "cost_inr": 12.5,

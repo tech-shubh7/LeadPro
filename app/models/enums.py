@@ -23,6 +23,10 @@ class LeadStatus(StrEnum):
     QUALIFIED_NO_CONTACT = "qualified_no_contact"  # passes every check except a verified decision-maker email
     REJECTED = "rejected"
     DROPPED_ON_REVALIDATION = "dropped_on_revalidation"
+    # A fresh, verified buying sign and a fitting company, but the score fell just short of qualifying.
+    # Delivered on its own Watchlist sheet: never counted toward the target, never sent to paid contact
+    # finders, and never recorded as delivered, so it can still become a full lead in a later run.
+    WATCHLIST = "watchlist"
 
 
 class LeadTier(StrEnum):

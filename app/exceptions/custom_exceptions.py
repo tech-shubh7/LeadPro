@@ -37,9 +37,12 @@ class CandidateRejectedError(AppError):
 
     status_code = 422
 
-    def __init__(self, reason: str, score: Any = None):
+    def __init__(self, reason: str, score: Any = None, evidence: list | None = None):
         super().__init__(reason)
         self.score = score  # the judge's scoring, kept for tuning the plan when present
+        # The verified signs seen before rejecting ([{url, quote, ...}]), kept so a near-miss can be reviewed
+        # and the source that found it judged, instead of only a one-line reason.
+        self.evidence = evidence
 
 
 class SuppressedError(AppError):

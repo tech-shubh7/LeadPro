@@ -3,7 +3,7 @@
 import asyncio
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
@@ -131,8 +131,8 @@ def parse_search_date(text: str | None, today: date) -> TrustedDate | None:
     return parse_relative_date(text, today, DateSource.SEARCH_RESULT)
 
 
-def build_sources(bundle: ResearchBundle) -> tuple[str, dict[str, str]]:
-    """LLM input and the texts claims are verified against (keyed by URL)."""
+def source_texts(bundle: ResearchBundle) -> dict[str, str]:
+    """Every source's text, keyed by URL: what claims are verified against (always in full)."""
     texts: dict[str, str] = {url: page.text for url, page in bundle.pages.items() if page.text}
     for hit in bundle.seed_hits:
         if (
@@ -141,8 +141,54 @@ def build_sources(bundle: ResearchBundle) -> tuple[str, dict[str, str]]:
             texts[hit.link] = f"{hit.title}\n{hit.snippet}"
         else:
             texts.setdefault(hit.link, f"{hit.title}\n{hit.snippet}")
-    limit = get_settings().llm_max_page_chars  # limits what the model reads; verification uses full text
-    blocks = [f'<source url="{url}">\n{text[:limit]}\n</source>' for url, text in texts.items()]
+    return texts
+
+
+# Site pages the model never reads: parsed in code only (company numbers, legal names).
+CODE_ONLY_ROLES = frozenset({"legal"})
+# Pages read only for people (names and roles): skipped when the run delivers no contacts.
+PEOPLE_PAGE_ROLES = frozenset({"team", "contact"})
+
+
+def not_too_old(d: TrustedDate | None, today: date, days: int) -> bool:
+    """The necessary condition for any signal from a source to be fresh. A signal's effective date is never
+    later than its source's trusted date (a stated event date can only make it older), so a source dated
+    before the window can never yield a fresh signal. The upper bound is not applied: a mis-dated future
+    page could still carry a fresh stated event date, and this check must never reject one."""
+    return d is not None and d.value >= today - timedelta(days=days)
+
+
+def fresh_source_urls(bundle: ResearchBundle, today: date, days: int) -> set[str]:
+    """Sources whose code-trusted date (API, page metadata, document, search result) is not before the
+    window. Dates come only from code here, never from the model, so this is known before any model call."""
+    return {url for url in source_texts(bundle) if not_too_old(_signal_date(url, bundle, today), today, days)}
+
+
+def build_sources(
+    bundle: ResearchBundle, today: date | None = None, days: int | None = None, wants_people: bool = True
+) -> tuple[str, dict[str, str]]:
+    """LLM input and the texts claims are verified against (keyed by URL).
+
+    Without `today` every source is shown at the full page limit. With it, the model reads selectively,
+    in a way that cannot cost a qualifying signal: sources dated inside the window (the only ones a
+    qualifying signal can come from) and the homepage are shown in full; other pages, which can only add
+    background facts or evidence against buying, are cut to the supporting limit; legal pages, and people
+    pages when no contacts are wanted, are not shown. Verification always uses every full text."""
+    texts = source_texts(bundle)
+    settings = get_settings()
+    full, supporting = settings.llm_max_page_chars, settings.llm_supporting_page_chars
+    fresh = fresh_source_urls(bundle, today, days) if today is not None and days is not None else None
+    first_party = {h.link for h in bundle.seed_hits if h.kind in FIRST_PARTY_KINDS}
+    blocks = []
+    for url, text in texts.items():
+        role = bundle.page_roles.get(url)
+        limit = full
+        if fresh is not None and role != "home" and url not in fresh and url not in first_party:
+            if role in CODE_ONLY_ROLES or (role in PEOPLE_PAGE_ROLES and not wants_people):
+                continue
+            if not (role in PEOPLE_PAGE_ROLES and wants_people):  # a team page is read whole for its people
+                limit = supporting
+        blocks.append(f'<source url="{url}">\n{text[:limit]}\n</source>')
     return "\n\n".join(blocks), texts
 
 
@@ -205,8 +251,20 @@ def collapse_duplicate_events(signals: list[VerifiedSignal]) -> list[VerifiedSig
     return merged
 
 
-async def extract(bundle: ResearchBundle, spec: JobSpec, llm: LLMProvider, today: date) -> Extraction:
-    data, texts = build_sources(bundle)
+async def extract(
+    bundle: ResearchBundle, spec: JobSpec, llm: LLMProvider, today: date, selective: bool = True
+) -> Extraction:
+    """`selective=False` shows every source in full: the old reading, kept for the research check."""
+    data, texts = (
+        build_sources(bundle, today, spec.freshness_days, spec.wants_contacts)
+        if selective
+        else build_sources(bundle)
+    )
+    people = (
+        "People: only named individuals with a stated role at this company."
+        if spec.wants_contacts
+        else "People: return an empty list (this run delivers no contacts)."
+    )
     signal_types = ", ".join(s.type for s in spec.playbook.signals)
     target = f"Target: {bundle.target_name or bundle.domain}" + (
         f" ({bundle.target_category})" if bundle.target_category else ""
@@ -219,8 +277,7 @@ async def extract(bundle: ResearchBundle, spec: JobSpec, llm: LLMProvider, today
         "(copied verbatim, at least 6 words). Do not use outside knowledge. Signals are recent events that "
         f"suggest buying intent; classify them as one of: {signal_types}, or 'other'. For each signal, copy the "
         "stated date of the event itself if the source gives one (an article can be new while the event is old), "
-        "and give the same event_key to every source describing the same event. "
-        "People: only named individuals with a stated role at this company.",
+        "and give the same event_key to every source describing the same event. " + people,
         data,
         ExtractOut,
         max_output_tokens=8000,

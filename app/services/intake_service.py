@@ -286,6 +286,7 @@ class Plan:
     freshness_days: int = 90
     personalized_email: bool = True
     include_icp_only: bool = False
+    include_watchlist: bool = True  # near misses with a real dated sign go on their own sheet
     output_mode: OutputMode = OutputMode.CONTACTS
     hiring_is_demand: bool = False  # the client sells capacity: a target hiring for its skill is demand
     cost_cap_inr: float | None = None
@@ -318,6 +319,7 @@ class Plan:
             freshness_days=self.freshness_days,
             personalized_email=drafts,
             include_icp_only=self.include_icp_only and contacts,
+            include_watchlist=self.include_watchlist,
             output_mode=self.output_mode,
             offer=self.offer,
             hiring_is_demand=self.hiring_is_demand,
@@ -784,6 +786,7 @@ def plan_to_json(plan: Plan) -> dict:
             "note": plan.note,
             "sources": plan.sources,
             "include_icp_only": plan.include_icp_only,
+            "include_watchlist": plan.include_watchlist,
             "output_mode": plan.output_mode.value,
             "hiring_is_demand": plan.hiring_is_demand,
             "profile": plan.profile.model_dump(),
@@ -816,6 +819,7 @@ def plan_from_job(job) -> Plan:
         freshness_days=job.freshness_days,
         personalized_email=job.personalized_email,
         include_icp_only=bool(intake.get("include_icp_only")),
+        include_watchlist=bool(intake.get("include_watchlist", True)),
         output_mode=stored_output_mode(job),
         hiring_is_demand=bool(intake.get("hiring_is_demand")),
         cost_cap_inr=job.cost_cap_inr,
@@ -916,6 +920,7 @@ class ReviewedPlanForm:
     cost_cap_inr: float = 0.0
     personalized_email: bool = False
     include_icp_only: bool = False
+    include_watchlist: bool = False  # a checkbox: absent from the post when unticked
     output_mode: OutputMode = OutputMode.CONTACTS
     hiring_is_demand: bool = False
     industries: str = ""
@@ -985,6 +990,7 @@ def build_reviewed_spec(job, form: ReviewedPlanForm) -> JobSpec:
         freshness_days=form.freshness_days,
         personalized_email=form.personalized_email,
         include_icp_only=form.include_icp_only,
+        include_watchlist=form.include_watchlist,
         output_mode=form.output_mode,
         hiring_is_demand=form.hiring_is_demand,
         cost_cap_inr=form.cost_cap_inr or job.cost_cap_inr,

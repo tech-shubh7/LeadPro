@@ -94,10 +94,11 @@ def test_signals_only_run_delivers_companies_with_signals_and_stores_no_people(t
     assert summary.status == JobStatus.DONE, summary.rejected
     assert (summary.qualified, summary.no_contact, summary.icp_only) == (2, 0, 0)
     assert any("dated within 90 days" in k for k in summary.rejected), summary.rejected
-    assert set(summary.outputs) == {"leads_csv", "xlsx"}  # no no-contact file
+    # No no-contact file; the watchlist sheet (on by default) is the only extra.
+    assert set(summary.outputs) == {"leads_csv", "xlsx", "watchlist_csv"}
 
     wb = openpyxl.load_workbook(summary.outputs["xlsx"])
-    assert wb.sheetnames == ["Leads", "Methodology"]
+    assert wb.sheetnames == ["Leads", "Watchlist - near misses", "Methodology"]
     header = next(wb["Leads"].values)
     assert list(header) == SIGNALS_ONLY_COLUMNS
     rows = _all_rows(wb, "Leads")

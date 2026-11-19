@@ -15,6 +15,7 @@ from app.compliance.country_pack import REGISTRY_MATCH_NUMBER, REGISTRY_MATCH_SO
 from app.exceptions.custom_exceptions import SuppressedError
 from app.models import Company, Contact, Delivery, Evidence, Job, JobLead, SourceDocument, Suppression
 from app.models.enums import EmailVerdict, EvidenceKind, LeadStatus
+from app.services.discovery_service import Origin
 from app.services.export_service import LeadResult
 from app.utils.evidence_verifier import quote_offset
 
@@ -161,7 +162,20 @@ def resolve_company(session: Session, domain: str, country: str, registry: dict)
     return upsert_company(session, domain, country)
 
 
-def save_rejection(session: Session, job: Job, domain: str, country: str, reason: str, score=None) -> None:
+def _origin_fields(origin: Origin | None) -> dict:
+    return {"found_by": origin.channel, "found_query": origin.query[:2000]} if origin else {}
+
+
+def save_rejection(
+    session: Session,
+    job: Job,
+    domain: str,
+    country: str,
+    reason: str,
+    score=None,
+    origin: Origin | None = None,
+    evidence: list | None = None,
+) -> None:
     """Records why a candidate was rejected. If this job already has a row for the company (a second
     domain of an already-saved company, e.g. a duplicate caught by registry number), that row wins: a
     rejection must never overwrite a lead, nor raise on the (job, company) unique key and fail the job."""
@@ -169,7 +183,12 @@ def save_rejection(session: Session, job: Job, domain: str, country: str, reason
     if session.scalar(select(JobLead.id).where(JobLead.job_id == job.id, JobLead.company_id == company.id)):
         return
     lead = JobLead(
-        job_id=job.id, company_id=company.id, status=LeadStatus.REJECTED, reject_reason=reason[:2000]
+        job_id=job.id,
+        company_id=company.id,
+        status=LeadStatus.REJECTED,
+        reject_reason=reason[:2000],
+        seen_evidence=evidence or None,
+        **_origin_fields(origin),
     )
     if score is not None:  # keep the judge's reasoning for tuning the ICP/playbook
         lead.fit_score, lead.intent_score, lead.timing_score = score.fit, score.intent, score.timing
@@ -238,7 +257,9 @@ def _anchor(session: Session, url: str, quote: str, texts: dict[str, str], seen)
     }
 
 
-def save_lead(session: Session, job: Job, lead: LeadResult, country: str) -> dict:
+def save_lead(
+    session: Session, job: Job, lead: LeadResult, country: str, origin: Origin | None = None
+) -> dict:
     """Persists a successfully-processed lead immediately (durable before any later crash).
     Returns {(first, last): contact_id} for the lead's decision-makers."""
     b, e, reg = lead.bundle, lead.extraction, lead.registry
@@ -351,11 +372,19 @@ def save_lead(session: Session, job: Job, lead: LeadResult, country: str) -> dic
         "outreach_reason": lead.outreach_reason,
         # `deliverable` is the output mode's own rule: in a signals-only run no contact is wanted, so a
         # company with its signal is fully qualified, not "qualified, no contact".
-        "status": LeadStatus.QUALIFIED if lead.deliverable else LeadStatus.QUALIFIED_NO_CONTACT,
+        "status": (
+            LeadStatus.WATCHLIST
+            if lead.watchlist
+            else LeadStatus.QUALIFIED
+            if lead.deliverable
+            else LeadStatus.QUALIFIED_NO_CONTACT
+        ),
         "lead_tier": lead.tier,
         "confidence_tier": lead.stack.tier or None,
         "signal_summary": lead.stack.summary or None,
         "reject_reason": None,
+        "seen_evidence": None,  # a qualified lead's evidence is stored in full as Evidence rows
+        **_origin_fields(origin),
         "email_drafts": [
             {
                 "contact_id": contact_ids[k],

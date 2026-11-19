@@ -163,6 +163,7 @@ def run(
     typer.echo(f"Job {summary.job_id}: {summary.status.value}")
     typer.echo(f"  qualified (verified contact): {summary.qualified}")
     typer.echo(f"  ICP fit, no strong signal (opt-in tier): {summary.icp_only}")
+    typer.echo(f"  watchlist (fresh sign, score just under the bar): {summary.watchlist}")
     typer.echo(f"  good leads, no verified contact: {summary.no_contact}")
     typer.echo(f"  rejected: {summary.rejected}")
     typer.echo(f"  cost: ₹{summary.cost_inr}")
@@ -288,6 +289,85 @@ def suppress(
     with session_scope() as s:
         store.add_suppression(s, kind, value, reason)
     typer.echo(f"Suppressed {kind}: {value.strip().lower()}")
+
+
+@cli.command()
+def sources(
+    job: list[int] = typer.Option(None, "--job", help="Job id (repeat for several; default: every job)"),
+) -> None:
+    """Which discovery source finds companies that qualify: researched, skipped free, near misses,
+    qualified and rated good, per channel. Reads the database only; makes no paid call."""
+    from app.config.database import session_scope
+    from app.repositories import console_repository as repo
+
+    with session_scope() as s:
+        report = repo.source_performance(s, job or None)
+    head = (
+        f"{'source':<18}{'researched':>11}{'skipped':>9}{'scored':>8}{'near':>6}{'watch':>7}"
+        f"{'qualified':>11}{'good':>6}{'cost':>10}{'tokens':>10}{'per kept':>10}"
+    )
+    typer.echo(head)
+    for r in report.rows:
+        per_kept = f"₹{r.cost_per_kept:.2f}" if r.cost_per_kept is not None else "-"
+        cost = f"₹{r.cost_inr:.2f}"
+        typer.echo(
+            f"{r.channel:<18}{r.found:>11}{r.skipped_before_model:>9}{r.scored:>8}{r.near_misses:>6}"
+            f"{r.watchlist:>7}{r.qualified:>11}{r.approved:>6}{cost:>10}{r.tokens:>10}{per_kept:>10}"
+        )
+    per = report.cost_per(report.qualified)
+    untagged = f"; ₹{report.untagged_cost_inr:.2f} from untagged runs" if report.untagged_cost_inr else ""
+    typer.echo(
+        f"cost ₹{report.cost_inr:.2f} (finding candidates ₹{report.shared_cost_inr:.2f}, shared{untagged})"
+        + (f" · ₹{per:.2f} per qualified lead" if per is not None else "")
+    )
+
+
+@cli.command("research-check")
+def research_check(
+    job: int = typer.Argument(..., help="Job id of a run made with RESEARCH_CHECK=true"),
+) -> None:
+    """Proof of selective reading on one run: tokens of the selective vs the full reading of the same
+    companies, companies skipped free that had a fresh signal, and pages where a signal was lost."""
+    import json
+
+    from app.config.database import session_scope
+    from app.models import Job
+    from app.services.research_check_service import report
+
+    with session_scope() as s:
+        found = s.get(Job, job)
+        if found is None:
+            typer.echo(f"No job {job}")
+            raise typer.Exit(1)
+        result = report(found)
+    if not result["companies"]:
+        typer.echo("This run has no research check (run it with RESEARCH_CHECK=true).")
+        raise typer.Exit(1)
+    typer.echo(json.dumps(result, indent=1))
+
+
+@cli.command()
+def calibrate() -> None:
+    """Does the score predict what you rate good? Precision per score band from lead ratings, and a
+    suggested bar once there are enough ratings. Reads the database only; changes nothing."""
+    from app.config.database import session_scope
+    from app.config.settings import get_settings
+    from app.repositories import feedback_repository as fb
+
+    with session_scope() as s:
+        report = fb.calibration(s, get_settings().qualify_score)
+    typer.echo(
+        f"{'score':<10}{'good':>6}{'wrong co.':>11}{'wrong int.':>12}{'wrong contact':>15}{'good %':>8}"
+    )
+    for b in report.bands:
+        share = f"{b.precision:.0%}" if b.precision is not None else "-"
+        typer.echo(
+            f"{b.label:<10}{b.good:>6}{b.wrong_company:>11}{b.wrong_intent:>12}{b.wrong_contact:>15}{share:>8}"
+        )
+    for note in report.notes:
+        typer.echo(f"- {note}")
+    if report.suggested is not None:
+        typer.echo(f"Suggested bar: {report.suggested} (current {report.threshold}); nothing was changed.")
 
 
 @cli.command("erase-person")

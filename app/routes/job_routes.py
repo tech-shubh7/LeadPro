@@ -54,6 +54,7 @@ def job_detail(
         rated=rated,
         feedback=feedback_repository.summary_for_job(session, job_id),
         rejected=repo.job_rejections_page(session, job_id, page) if tab == "rejected" else None,
+        sources=repo.source_performance(session, [job_id]) if tab == "rejected" else None,
         counts=repo.lead_counts_for_jobs(session, [job_id]).get(job_id, repo.LeadCounts()),
         reasons=repo.rejection_reasons(session, job),
         costs=repo.cost_breakdown(job),

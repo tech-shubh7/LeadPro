@@ -58,3 +58,10 @@ class JobLead(TimestampMixin, Base):
     rank: Mapped[int | None] = mapped_column(Integer)
     # [{contact_id, subject, body, evidence_ids}] when personalized_email is on
     email_drafts: Mapped[list] = mapped_column(JSON, default=list)
+    # Where this company came from (discovery_service.candidate_origin): the channel ("linkedin_jobs",
+    # "web_search", ...) and the query or source that found it. Feeds the source performance report.
+    found_by: Mapped[str | None] = mapped_column(String(40))
+    found_query: Mapped[str | None] = mapped_column(Text)
+    # For a rejection: the verified signs seen before rejecting ([{url, quote, claim, date, intent, against}]),
+    # so a near-miss can be reviewed from its evidence, not only its one-line reason.
+    seen_evidence: Mapped[list | None] = mapped_column(JSON)

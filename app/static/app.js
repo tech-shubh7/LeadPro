@@ -51,11 +51,11 @@
     live.querySelectorAll("[data-live]").forEach((n) => (nodes[n.dataset.live] = n));
 
     poll(`/jobs/${live.dataset.job}/progress`, (data) => {
-      for (const key of ["qualified", "icp_only", "no_contact", "rejected"]) {
+      for (const key of ["qualified", "icp_only", "no_contact", "watchlist", "rejected"]) {
         if (nodes[key]) nodes[key].textContent = data[key];
       }
       if (nodes.candidates) {
-        const seen = data.qualified + data.icp_only + data.no_contact + data.rejected;
+        const seen = data.qualified + data.icp_only + data.no_contact + (data.watchlist || 0) + data.rejected;
         nodes.candidates.textContent = Math.max(data.candidates || 0, seen);
       }
       if (nodes.cost) nodes.cost.textContent = `₹${Number(data.cost_inr).toFixed(2)}`;

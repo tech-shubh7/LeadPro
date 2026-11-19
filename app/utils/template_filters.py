@@ -154,9 +154,16 @@ def file_label(path) -> str:
     if name.endswith(".xlsx"):
         return "Spreadsheet"
     stem = name.rsplit(".", 1)[0]
-    part = stem.rsplit("_", 1)[-1] if not stem.endswith("no_contact") else "no_contact"
-    return {"leads": "Leads CSV", "no_contact": "No-contact CSV", "icp_only": "ICP-only CSV"}.get(
-        part, name.rsplit(".", 1)[-1].upper()
+    labels = {
+        "no_contact": "No-contact CSV",
+        "icp_only": "ICP-only CSV",
+        "watchlist": "Watchlist CSV",
+        "leads": "Leads CSV",
+    }
+    # Matched on the whole suffix: "icp_only" and "no_contact" contain underscores themselves.
+    return next(
+        (label for suffix, label in labels.items() if stem.endswith(f"_{suffix}")),
+        name.rsplit(".", 1)[-1].upper(),
     )
 
 

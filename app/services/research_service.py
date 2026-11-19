@@ -26,6 +26,8 @@ PAGE_KEYWORDS = {
 
 
 BLOCKED_STATUSES = frozenset({401, 403, 429, 503})
+# Pages only worth reading for people: not fetched when the run delivers no contacts (signals-only).
+NOT_FETCHED_WITHOUT_PEOPLE = frozenset({"team"})
 
 
 @dataclass
@@ -43,6 +45,9 @@ class ResearchBundle:
     phones: list[PhoneHit] = field(default_factory=list)
     company_numbers: list[str] = field(default_factory=list)
     legal_names: list[str] = field(default_factory=list)
+    # Fetched site page (final URL) -> what kind of page it is (a PAGE_KEYWORDS key). Decides how much of
+    # it the model reads: a privacy policy is parsed for company numbers in code, never sent to the model.
+    page_roles: dict[str, str] = field(default_factory=dict)
 
     @property
     def website_live(self) -> bool:
@@ -58,10 +63,15 @@ class ResearchBundle:
 
 
 def pick_internal_links(page_html: str, base_url: str, domain: str) -> list[str]:
+    return list(dict.fromkeys(internal_link_roles(page_html, base_url, domain).values()))
+
+
+def internal_link_roles(page_html: str, base_url: str, domain: str) -> dict[str, str]:
+    """The best same-site link for each kind of page (role -> url), in the order found."""
     try:
         tree = lxml_html.fromstring(page_html)
     except (ValueError, lxml_html.etree.ParserError):
-        return []
+        return {}
     best: dict[str, str] = {}
     for a in tree.xpath("//a[@href]"):
         url = urljoin(base_url, a.get("href").split("#")[0])
@@ -71,7 +81,7 @@ def pick_internal_links(page_html: str, base_url: str, domain: str) -> list[str]
         for category, words in PAGE_KEYWORDS.items():
             if category not in best and any(w in hay for w in words):
                 best[category] = url
-    return list(dict.fromkeys(best.values()))
+    return best
 
 
 async def company_news(serper, name: str, gl: str, n: int) -> list:
@@ -94,6 +104,7 @@ async def research(
     serper=None,
     gl: str = "uk",
     news_queries: int = 0,
+    wants_people: bool = True,
 ) -> ResearchBundle:
     homepage = None
     attempts = []
@@ -124,17 +135,24 @@ async def research(
             if h.link not in known
         ]
 
-    links: list[str] = []
+    roles: dict[str, str] = {}  # requested url -> role
     if live is not None:
         bundle.pages[live.final_url] = live
-        links = pick_internal_links(live.html, live.final_url, candidate.domain)[:MAX_SITE_PAGES]
+        bundle.page_roles[live.final_url] = "home"
+        found = internal_link_roles(live.html, live.final_url, candidate.domain)
+        for role, url in list(found.items())[:MAX_SITE_PAGES]:
+            if wants_people or role not in NOT_FETCHED_WITHOUT_PEOPLE:
+                roles.setdefault(url, role)
     seed_urls = list(dict.fromkeys(h.link for h in bundle.seed_hits if h.kind not in FIRST_PARTY_KINDS))[
         :MAX_SEED_PAGES
     ]
-    results = await asyncio.gather(*(fetcher.fetch(u) for u in dict.fromkeys(links + seed_urls)))
-    for r in results:
+    urls = list(dict.fromkeys([*roles, *seed_urls]))
+    results = await asyncio.gather(*(fetcher.fetch(u) for u in urls))
+    for url, r in zip(urls, results, strict=True):
         if r.ok:
             bundle.pages[r.final_url] = r
+            if url in roles:
+                bundle.page_roles.setdefault(r.final_url, roles[url])
 
     site_html = [p.html for p in bundle.pages.values() if normalize_domain(p.final_url) == candidate.domain]
     # HTML parsing and phone matching are CPU-bound: off the event loop, like page text extraction.

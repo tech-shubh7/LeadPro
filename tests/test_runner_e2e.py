@@ -378,7 +378,8 @@ def test_wrong_website_match_is_rejected(tmp_path: Path, clean_db, monkeypatch):
     class MismatchLLM(FakeLLM):
         async def parse(self, model, instructions, data, schema, effort="low", max_output_tokens=16000):
             out = await super().parse(model, instructions, data, schema, effort, max_output_tokens)
-            if schema is ExtractOut and "website is charlie.co.uk" in instructions:
+            # acme has a fresh dated article, so it reaches the model (charlie's is stale: skipped before it)
+            if schema is ExtractOut and "website is acme.co.uk" in instructions:
                 out.sources_match_target = False
             return out
 

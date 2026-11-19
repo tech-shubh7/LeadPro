@@ -2,9 +2,10 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
 from app.config.database import DbSession
+from app.config.settings import get_settings
 from app.config.templates import render
 from app.models.enums import JobStatus
-from app.repositories import console_repository
+from app.repositories import console_repository, feedback_repository
 from app.services import run_manager_service
 
 router = APIRouter(tags=["Dashboard"])
@@ -26,4 +27,5 @@ def dashboard(
         totals=console_repository.totals(session),
         jobs=console_repository.jobs_page(session, page, q, status),
         statuses=[s.value for s in JobStatus],
+        calibration=feedback_repository.calibration(session, get_settings().qualify_score),
     )

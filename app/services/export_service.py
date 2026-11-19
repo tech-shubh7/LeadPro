@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from app.config.constants import WORLDWIDE
+from app.config.settings import get_settings
 from app.models.enums import LeadTier
 from app.schemas.job_spec_schema import JobSpec
 from app.services.contact_service import DecisionMaker
@@ -93,6 +94,9 @@ SIGNALS_ONLY_COLUMNS = [
     "data_freshness_date",
 ]
 ICP_SHEET = "ICP fit - no strong signal"
+WATCHLIST_SHEET = "Watchlist - near misses"
+# Company + signal, plus why it fell short: the score parts and the judge's reasoning and risks.
+WATCHLIST_COLUMNS = [*SIGNALS_ONLY_COLUMNS, "fit_score", "intent_score", "timing_score", "why_not_qualified"]
 NO_CONTACT_COLUMNS = [*COMPANY_COLUMNS, "decision_makers_found_without_verified_email", "why_no_contact"]
 
 
@@ -132,6 +136,7 @@ class LeadResult:
     company_id: int | None = None
     contact_ids: dict[tuple[str, str], int] = field(default_factory=dict)  # set once persisted
     contacts_wanted: bool = True  # False in a signals-only run: the company + signal is the whole lead
+    watchlist: bool = False  # a near miss: fresh signal, score just under the bar (LeadStatus.WATCHLIST)
 
     @property
     def verified_people(self) -> list[DecisionMaker]:
@@ -140,8 +145,9 @@ class LeadResult:
     @property
     def deliverable(self) -> bool:
         """Complete for its run's output mode. The one rule the run, revalidation, persistence and export
-        all share, so a lead counted as ready is always the lead on the Leads sheet."""
-        return bool(self.verified_people) or not self.contacts_wanted
+        all share, so a lead counted as ready is always the lead on the Leads sheet. A watchlist lead never
+        is: it fell short of the bar, and goes on its own sheet."""
+        return not self.watchlist and (bool(self.verified_people) or not self.contacts_wanted)
 
 
 def rank_key(lead: LeadResult) -> tuple[int, int]:
@@ -238,6 +244,7 @@ def build_rows(
     leads: list[LeadResult], spec: JobSpec, today: date
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """(Leads, ICP fit - no strong signal, Good leads - no contact) rows."""
+    leads = [lead for lead in leads if not lead.watchlist]  # on their own sheet (watchlist_rows)
     lead_rows = _person_rows(
         sorted(
             (lead for lead in leads if lead.verified_people and lead.tier == LeadTier.SIGNAL), key=rank_key
@@ -274,8 +281,31 @@ def build_rows(
 def signals_only_rows(leads: list[LeadResult], spec: JobSpec, today: date) -> list[dict]:
     """One row per signal lead, ranked as the run ranked them. ICP-only leads never reach a signals-only
     run (the spec forbids the tier), and are filtered here as well."""
-    ranked = sorted((lead for lead in leads if lead.tier == LeadTier.SIGNAL), key=rank_key)
+    ranked = sorted(
+        (lead for lead in leads if lead.tier == LeadTier.SIGNAL and not lead.watchlist), key=rank_key
+    )
     return [company_row(lead, rank, spec, today) for rank, lead in enumerate(ranked, 1)]
+
+
+def watchlist_rows(leads: list[LeadResult], spec: JobSpec, today: date) -> list[dict]:
+    """Near misses: a fresh verified sign, but a score just under the bar. Ranked like leads, from 1."""
+    ranked = sorted((lead for lead in leads if lead.watchlist), key=rank_key)
+    rows = []
+    for rank, lead in enumerate(ranked, 1):
+        sc = lead.score
+        why = f"score {sc.total} below {get_settings().qualify_score}: {sc.why}" + (
+            f" Risks: {sc.risks}" if sc.risks else ""
+        )
+        rows.append(
+            company_row(lead, rank, spec, today)
+            | {
+                "fit_score": sc.fit,
+                "intent_score": sc.intent,
+                "timing_score": sc.timing,
+                "why_not_qualified": why,
+            }
+        )
+    return rows
 
 
 def write_outputs(
@@ -296,6 +326,11 @@ def write_outputs(
             paths["icp_only_csv"] = out_dir / f"{stem}_icp_only.csv"
             sheets.append((ICP_SHEET, icp_cols, icp_rows, paths["icp_only_csv"]))
         sheets.append(("Good leads - no contact", NO_CONTACT_COLUMNS, nc_rows, paths["no_contact_csv"]))
+    if spec.include_watchlist:
+        paths["watchlist_csv"] = out_dir / f"{stem}_watchlist.csv"
+        sheets.append(
+            (WATCHLIST_SHEET, WATCHLIST_COLUMNS, watchlist_rows(leads, spec, today), paths["watchlist_csv"])
+        )
     temporary_paths: dict[str, Path] = {}
     for _, cols, rows, path in sheets:
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -344,6 +379,15 @@ def _methodology(spec: JobSpec, today: date) -> list[str]:
         common.append(
             "Worldwide run: no company registry or country rules were checked, and the country column is left "
             "blank because each company's country was not verified."
+        )
+    if spec.include_watchlist:
+        settings = get_settings()
+        common.append(
+            f"'{WATCHLIST_SHEET}' sheet: companies with a fresh, verified buying sign that scored "
+            f"{settings.watchlist_min_score}-{settings.qualify_score - 1} (qualified leads score "
+            f"{settings.qualify_score}+) and fit at least {settings.watchlist_min_fit} of 40. They did not qualify: "
+            "no contacts were looked up and they are not marked as delivered, so a later run can still deliver "
+            "them as leads. why_not_qualified says what fell short."
         )
     if not spec.wants_contacts:
         return [

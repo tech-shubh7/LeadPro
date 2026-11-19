@@ -122,6 +122,9 @@ class JobSpec(BaseModel):
     # Opt-in tier: companies that fit the ICP (registry-active, high fit) but show no current dated signal.
     # Delivered on their own sheet, clearly labelled, only to fill up to `count` after signal leads.
     include_icp_only: bool = False
+    # Near misses with a real dated signal (settings.watchlist_min_score up to qualify_score) go on their own
+    # Watchlist sheet instead of being thrown away. Never counted toward `count`, never sent to email finders.
+    include_watchlist: bool = True
     cost_cap_inr: float | None = Field(default=None, gt=0, le=MAX_COST_CAP_INR)
     icp: dict
     playbook: Playbook

@@ -8,10 +8,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Company, Contact, Delivery, Evidence, Job, JobLead, Suppression
+from app.config.constants import NO_FRESH_SOURCE_PREFIX
+from app.models import Company, Contact, Delivery, Evidence, Job, JobLead, LeadFeedback, Suppression
 from app.models.enums import EvidenceKind, JobStatus, LeadStatus, LeadTier
 
 PAGE_SIZE = 25
@@ -63,6 +64,7 @@ class Totals:
     qualified: int = 0
     no_contact: int = 0
     icp_only: int = 0
+    watchlist: int = 0
     rejected: int = 0
     companies: int = 0
     verified_emails: int = 0
@@ -72,7 +74,7 @@ class Totals:
 
     @property
     def researched(self) -> int:
-        return self.qualified + self.no_contact + self.icp_only + self.rejected
+        return self.qualified + self.no_contact + self.icp_only + self.watchlist + self.rejected
 
     @property
     def contact_rate(self) -> float:
@@ -95,6 +97,8 @@ def totals(session: Session) -> Totals:
     ).all():
         if status in DROPPED:
             t.rejected += n
+        elif status == LeadStatus.WATCHLIST:
+            t.watchlist += n
         elif tier == LeadTier.ICP_ONLY:
             t.icp_only += n
         elif status == LeadStatus.QUALIFIED:
@@ -136,6 +140,7 @@ class LeadCounts:
     qualified: int = 0
     no_contact: int = 0
     icp_only: int = 0
+    watchlist: int = 0  # near misses on their own sheet: not delivered, not counted as leads
     rejected: int = 0
 
     @property
@@ -157,6 +162,8 @@ def lead_counts_for_jobs(session: Session, job_ids: list[int]) -> dict[int, Lead
         c = out[job_id]
         if status in DROPPED:
             c.rejected += n
+        elif status == LeadStatus.WATCHLIST:
+            c.watchlist += n
         elif tier == LeadTier.ICP_ONLY:
             c.icp_only += n
         elif status == LeadStatus.QUALIFIED:
@@ -189,10 +196,18 @@ def job_leads_page(
         select(JobLead, Company)
         .join(Company, Company.id == JobLead.company_id)
         .where(JobLead.job_id == job_id, JobLead.status.not_in(DROPPED))
-        .order_by(JobLead.lead_tier, JobLead.rank.is_(None), JobLead.rank, JobLead.total_score.desc())
+        .order_by(
+            JobLead.status == LeadStatus.WATCHLIST,  # near misses after every lead
+            JobLead.lead_tier,
+            JobLead.rank.is_(None),
+            JobLead.rank,
+            JobLead.total_score.desc(),
+        )
     )
     if tier in (LeadTier.SIGNAL, LeadTier.ICP_ONLY):
-        stmt = stmt.where(JobLead.lead_tier == tier)
+        stmt = stmt.where(JobLead.lead_tier == tier, JobLead.status != LeadStatus.WATCHLIST)
+    elif tier == LeadStatus.WATCHLIST:
+        stmt = stmt.where(JobLead.status == LeadStatus.WATCHLIST)
     if contact == "yes":
         stmt = stmt.where(JobLead.status == LeadStatus.QUALIFIED)
     elif contact == "no":
@@ -369,6 +384,7 @@ def job_progress(session: Session, job_id: int) -> dict[str, Any] | None:
         "qualified": counts.qualified,
         "icp_only": counts.icp_only,
         "no_contact": counts.no_contact,
+        "watchlist": counts.watchlist,
         "rejected": counts.rejected,
         "cost_inr": round(float(cost or 0.0), 2),
         "finished_at": finished_at.isoformat() if isinstance(finished_at, datetime) else None,
@@ -396,3 +412,107 @@ def draft_status(session: Session, job_id: int) -> dict | None:
     if row is None:
         return None
     return {"status": row[0].value, "ready": row[0] != JobStatus.RESEARCHING_CLIENT, "error": row[1]}
+
+
+# --- source performance ---------------------------------------------------------------------------------
+
+# A rejected company scoring at least this was close: worth reviewing, and a sign its source finds the right
+# kind of company even when the evidence fell short.
+NEAR_MISS_SCORE = 50
+UNTRACKED = "untracked"  # rows from runs before sources were recorded (job 28 and earlier)
+
+
+@dataclass(frozen=True)
+class SourceRow:
+    """How one discovery channel performed: from companies it found to leads a person approved."""
+
+    channel: str
+    found: int  # companies researched
+    skipped_before_model: int  # no source dated inside the window: rejected with no model call
+    scored: int  # reached the judge
+    near_misses: int  # rejected, but scored NEAR_MISS_SCORE or more
+    watchlist: int  # fresh sign, score just under the bar: on the Watchlist sheet
+    qualified: int
+    approved: int  # rated "good" by a person
+    disputed: int  # rated, but not good
+    cost_inr: float = 0.0  # research spend on this source's companies (tagged runs only)
+    tokens: int = 0  # model tokens on this source's companies (tagged runs only)
+
+    @property
+    def cost_per_kept(self) -> float | None:
+        """Research spend per lead or watchlist company this source produced."""
+        kept = self.qualified + self.watchlist
+        return self.cost_inr / kept if kept and self.cost_inr else None
+
+    @property
+    def qualified_pct(self) -> float:
+        return 100.0 * self.qualified / self.found if self.found else 0.0
+
+
+@dataclass(frozen=True)
+class SourceReport:
+    rows: list[SourceRow]
+    cost_inr: float  # the selected jobs' whole spend
+    shared_cost_inr: float = 0.0  # plan + discovery: spent finding candidates for every source together
+    untagged_cost_inr: float = 0.0  # from runs before calls were tagged (job 28 and earlier)
+
+    @property
+    def qualified(self) -> int:
+        return sum(r.qualified for r in self.rows)
+
+    @property
+    def approved(self) -> int:
+        return sum(r.approved for r in self.rows)
+
+    def cost_per(self, n: int) -> float | None:
+        return self.cost_inr / n if n else None
+
+
+def source_performance(session: Session, job_ids: list[int] | None = None) -> SourceReport:
+    """One row per channel, best yield first; one GROUP BY over the selected jobs (all jobs when None)."""
+    rejected = JobLead.status.in_(DROPPED)
+    qualified = JobLead.status.in_((LeadStatus.QUALIFIED, LeadStatus.QUALIFIED_NO_CONTACT))
+    channel = func.coalesce(JobLead.found_by, UNTRACKED)
+
+    def count_if(condition) -> Any:
+        return func.coalesce(func.sum(case((condition, 1), else_=0)), 0)
+
+    stmt = (
+        select(
+            channel,
+            func.count(JobLead.id),
+            count_if(JobLead.reject_reason.startswith(NO_FRESH_SOURCE_PREFIX)),
+            count_if(JobLead.total_score.is_not(None)),
+            count_if(rejected & (JobLead.total_score >= NEAR_MISS_SCORE)),
+            count_if(JobLead.status == LeadStatus.WATCHLIST),
+            count_if(qualified),
+            count_if(LeadFeedback.verdict == "good"),
+            count_if(LeadFeedback.verdict.is_not(None) & (LeadFeedback.verdict != "good")),
+        )
+        .outerjoin(LeadFeedback, LeadFeedback.job_lead_id == JobLead.id)
+        .group_by(channel)
+    )
+    jobs = select(Job.cost_inr, Job.cost_lines)
+    if job_ids is not None:
+        stmt = stmt.where(JobLead.job_id.in_(job_ids))
+        jobs = jobs.where(Job.id.in_(job_ids))
+    spend: dict[str, list[float]] = {}  # channel -> [₹, tokens]
+    total = shared = untagged = 0.0
+    for job_cost, lines in session.execute(jobs).all():
+        total += float(job_cost or 0.0)
+        for line in lines or []:
+            inr, units = float(line.get("cost_inr") or 0.0), float(line.get("units") or 0.0)
+            if channel := line.get("channel"):
+                entry = spend.setdefault(channel, [0.0, 0.0])
+                entry[0] += inr
+                entry[1] += units if line.get("provider") in ("openai", "gemini") else 0
+            elif line.get("stage"):
+                shared += inr
+            else:
+                untagged += inr
+    rows = []
+    for r in session.execute(stmt).all():
+        inr, units = spend.get(r[0], (0.0, 0.0))
+        rows.append(SourceRow(r[0], *(int(v) for v in r[1:]), cost_inr=inr, tokens=int(units)))
+    rows.sort(key=lambda r: (-r.approved, -r.qualified, -r.watchlist, -r.near_misses, -r.found))
+    return SourceReport(rows, total, shared, untagged)

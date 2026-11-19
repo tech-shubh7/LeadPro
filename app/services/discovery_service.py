@@ -272,6 +272,47 @@ class Candidate:
     registry_id: str | None = (
         None  # company number stated by the discovery source itself (e.g. a contract award notice)
     )
+    seeded: bool = False  # nominated in the job spec by outside research, not found by discovery
+
+
+# Where a candidate came from, for the source performance report. Read from the hit that brought the
+# candidate in (hits record their query: "ats:lever:acme", "linkedin:123", "reed:456", "browse:<url>"),
+# so no discovery step has to remember it separately.
+CHANNEL_SEED = "seed"
+CHANNEL_ATS = "ats_jobs"
+CHANNEL_LINKEDIN = "linkedin_jobs"
+CHANNEL_REED = "reed_jobs"
+CHANNEL_CONTRACTS = "contracts_finder"
+CHANNEL_BROWSE = "agent_browse"
+CHANNEL_WEB_SEARCH = "web_search"
+CHANNEL_WEB_NEWS = "web_news"
+CHANNEL_UNKNOWN = "unknown"
+_QUERY_PREFIX_CHANNELS = (
+    ("ats:", CHANNEL_ATS),
+    ("linkedin:", CHANNEL_LINKEDIN),
+    ("reed:", CHANNEL_REED),
+    ("contracts_finder:", CHANNEL_CONTRACTS),
+    ("browse:", CHANNEL_BROWSE),
+)
+
+
+@dataclass(frozen=True)
+class Origin:
+    channel: str
+    query: str  # the search or source that found it (a web query, a board, a browsed page)
+
+
+def candidate_origin(cand: Candidate) -> Origin:
+    """The channel and query of the first hit, the one that put this company on the list."""
+    if cand.seeded:
+        return Origin(CHANNEL_SEED, cand.name_hint or "")
+    if not cand.seed_hits:
+        return Origin(CHANNEL_UNKNOWN, "")
+    hit = cand.seed_hits[0]
+    for prefix, channel in _QUERY_PREFIX_CHANNELS:
+        if hit.query.startswith(prefix):
+            return Origin(channel, hit.query)
+    return Origin(CHANNEL_WEB_NEWS if hit.kind == "news" else CHANNEL_WEB_SEARCH, hit.query)
 
 
 # ---- LLM schemas -----------------------------------------------------------------------------
@@ -592,6 +633,7 @@ async def _discover(
                 triage_note=seed.note,
                 category=seed.category,
                 seed_hits=hits,
+                seeded=True,
             )
             by_name[seed.name.lower()] = by_domain[domain]
     if spec.seeds_only or len(by_domain) >= limit:

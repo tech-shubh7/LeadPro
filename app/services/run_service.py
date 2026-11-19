@@ -23,7 +23,7 @@ from app.compliance.country_pack import (
     REGISTRY_MATCH_OFFICER,
     REGISTRY_MATCH_SOURCE,
 )
-from app.config.constants import STAFFING_WORDS
+from app.config.constants import NO_FRESH_SOURCE_REASON, STAFFING_WORDS
 from app.config.database import session_scope
 from app.config.settings import get_settings
 from app.exceptions.custom_exceptions import (
@@ -45,13 +45,14 @@ from app.providers.web.page_fetcher import Fetcher
 from app.repositories import lead_repository as store
 from app.schemas.job_spec_schema import JobSpec
 from app.services.contact_service import attach_emails, rank_decision_makers
-from app.services.discovery_service import GL, Candidate, discover
+from app.services.discovery_service import GL, Candidate, Origin, candidate_origin, discover
 from app.services.draft_service import write_draft
 from app.services.export_service import LeadResult, rank_key, write_outputs
-from app.services.extraction_service import extract
+from app.services.extraction_service import Extraction, extract, fresh_source_urls
+from app.services.research_check_service import SKIPPED, CheckResult, check
 from app.services.research_service import research
 from app.services.revalidation_service import revalidate
-from app.services.scoring_service import fresh_signals, score
+from app.services.scoring_service import fresh_signals, on_watchlist, score
 from app.services.signal_intelligence_service import (
     INTENT_LABELS,
     TIER_WEAK,
@@ -61,11 +62,31 @@ from app.services.signal_intelligence_service import (
     combine,
 )
 from app.services.source_service import board_checker_for
-from app.utils.cost_tracker import CostTracker, UsageLine
+from app.utils.cost_tracker import CostTracker, UsageLine, usage_tags
 from app.utils.logger import get_logger
 from app.utils.normalize import normalize_domain
 
 logger = get_logger(__name__)
+
+MAX_KEPT_EVIDENCE = 8  # verified signs kept on a rejected company's row
+
+
+def seen_evidence(ext: Extraction) -> list[dict]:
+    """The verified signs a rejected company showed, for near-miss review and source quality."""
+    rows = []
+    for against, sig in [*((False, s) for s in ext.signals), *((True, s) for s in ext.against)]:
+        rows.append(
+            {
+                "url": sig.source_url,
+                "quote": sig.quote[:500],
+                "claim": sig.claim[:300],
+                "signal_type": sig.signal_type,
+                "date": sig.effective_date.isoformat() if sig.effective_date else None,
+                "intent": sig.intent or None,
+                "against": against,
+            }
+        )
+    return rows[:MAX_KEPT_EVIDENCE]
 
 
 @dataclass
@@ -88,6 +109,8 @@ class RunGuards:
     # (registry, number) -> outcome of the domain researching it in this run (True = it became a lead). Catches
     # the same registered company reached through a second domain (acme.co.uk vs acme.com).
     claims: dict[tuple[str, str], asyncio.Future] = field(default_factory=dict)
+    # Research check (settings.research_check): domain -> how the full reading compared.
+    checks: dict[str, CheckResult] = field(default_factory=dict)
 
 
 async def claim_registry(guards: RunGuards, key: tuple[str, str]) -> asyncio.Future:
@@ -119,10 +142,12 @@ class RunSummary:
     qualified: int
     no_contact: int
     icp_only: int = 0
+    watchlist: int = 0
     rejected: dict[str, int] = field(default_factory=dict)
     cost_inr: float = 0.0
     outputs: dict = field(default_factory=dict)
     stopped_by_cap: bool = False  # the budget ended the run: it can be continued with a bigger one
+    research_check: list[dict] = field(default_factory=list)  # settings.research_check runs only
 
 
 def default_deps(cost: CostTracker, spec: JobSpec, llm_mode: str | None = None) -> Deps:
@@ -176,17 +201,57 @@ async def process_candidate(
     settings = get_settings()
     guards = guards or RunGuards()
     pack = get_pack(spec.countries[0])
-    bundle = await research(
-        c,
-        deps.fetcher,
-        pack.phone_region,
-        serper=deps.serper,
-        gl=GL.get(pack.code, "uk"),
-        news_queries=settings.company_news_queries,
-    )
+    with usage_tags(stage="research"):  # the per-company news search
+        bundle = await research(
+            c,
+            deps.fetcher,
+            pack.phone_region,
+            serper=deps.serper,
+            gl=GL.get(pack.code, "uk"),
+            news_queries=settings.company_news_queries,
+            wants_people=spec.wants_contacts,
+        )
     if not bundle.website_live and not bundle.website_blocked:
         raise CandidateRejectedError("website unreachable")
-    ext = await extract(bundle, spec, deps.llm, today)
+    # Rejected before the model reads anything when no source has a code-trusted date inside the window: no
+    # signal from this company could be fresh (extraction_service.not_too_old), so the extraction call (about
+    # 5,000 tokens) is saved for the undated candidates it rejected anyway (job 27). An ICP-only lead
+    # qualifies without a signal, so only signal runs skip on dates alone.
+    if not spec.include_icp_only and not fresh_source_urls(bundle, today, spec.freshness_days):
+        if settings.research_check:
+            await _research_check(guards, bundle, spec, deps, today, None)
+        raise CandidateRejectedError(NO_FRESH_SOURCE_REASON.format(days=spec.freshness_days))
+    with usage_tags(stage="extract"):
+        ext = await extract(bundle, spec, deps.llm, today)
+    if settings.research_check:
+        await _research_check(guards, bundle, spec, deps, today, ext)
+    try:
+        return await _checked(c, spec, deps, today, lead_id, guards, pack, bundle, ext)
+    except CandidateRejectedError as r:
+        if r.evidence is None:
+            r.evidence = seen_evidence(ext)
+        raise
+
+
+async def _research_check(guards: RunGuards, bundle, spec: JobSpec, deps: Deps, today: date, ext) -> None:
+    """Records how the old full reading compares; never decides anything about the company itself."""
+    try:
+        guards.checks[bundle.domain] = await check(bundle, spec, deps.llm, today, ext)
+    except CostCapExceededError:
+        raise
+    except Exception:  # a failed comparison must not cost the company its research
+        logger.exception("research check failed for %s", bundle.domain)
+
+
+def _note_check(guards: RunGuards, domain: str, outcome: str, score=None) -> None:
+    if (result := guards.checks.get(domain)) is not None and result.selective_outcome != SKIPPED:
+        result.selective_outcome = outcome
+        result.selective_score = score.total if score is not None else None
+
+
+async def _checked(
+    c: Candidate, spec: JobSpec, deps: Deps, today: date, lead_id: str, guards: RunGuards, pack, bundle, ext
+) -> LeadResult:
     if not ext.sources_match_target:
         raise CandidateRejectedError(f"website match is a different organisation than '{c.name_hint}'")
     staffing_wanted = any(w in spec.ask.lower() for w in STAFFING_WORDS)
@@ -198,9 +263,10 @@ async def process_candidate(
             f"website prints company number {', '.join(bundle.company_numbers)}, "
             f"not the notice supplier's {c.registry_id}"
         )
-    record, registry_match = await _registry_record(
-        deps, pack, bundle, ext.company_name, ext.people, c.registry_id
-    )
+    with usage_tags(stage="registry"):
+        record, registry_match = await _registry_record(
+            deps, pack, bundle, ext.company_name, ext.people, c.registry_id
+        )
     claim = None
     if record and registry_match in (REGISTRY_MATCH_NUMBER, REGISTRY_MATCH_SOURCE):
         claim = await claim_registry(guards, (record.registry, record.registry_id))
@@ -236,9 +302,10 @@ async def _qualify(
             f"registry status '{record.status}' ({record.registry} {record.registry_id})"
         )
     seed_kinds = {hit.link: hit.kind for hit in bundle.seed_hits}
-    assessment = await assess_signals(
-        ext.signals, spec, ext.company_name, bundle.domain, seed_kinds, deps.llm
-    )
+    with usage_tags(stage="intent"):
+        assessment = await assess_signals(
+            ext.signals, spec, ext.company_name, bundle.domain, seed_kinds, deps.llm
+        )
     ext.signals, ext.against = assessment.buying, assessment.against
     proofs = {AliveProof.WEBSITE_LIVE if bundle.website_live else AliveProof.WEBSITE_EXISTS}
     if record and record.status == "active":
@@ -256,11 +323,17 @@ async def _qualify(
         raise CandidateRejectedError(f"not enough proof the business is active ({', '.join(sorted(proofs))})")
     qualifying = [s for s in fresh_signals(ext, today, spec.freshness_days) if can_qualify(s)]
     stack = combine(qualifying)
-    sc = await score(ext, spec, deps.llm, today, stack.summary)
+    with usage_tags(stage="score"):
+        sc = await score(ext, spec, deps.llm, today, stack.summary)
     if stack.tier == TIER_WEAK:  # budget alone never reads as strong intent, whatever the scorer says
         sc.intent = min(sc.intent, WEAK_INTENT_CAP)
+    watchlist = False
     if AliveProof.RECENT_DATED_SIGNAL in proofs and sc.total >= settings.qualify_score:
         tier = LeadTier.SIGNAL
+    elif AliveProof.RECENT_DATED_SIGNAL in proofs and on_watchlist(sc, spec):
+        # A real, fresh, verified sign that scored just short: kept on the Watchlist sheet rather than thrown
+        # away (job 28's 55-65 agencies). Checked before ICP-only, whose sheet means "no current sign".
+        tier, watchlist = LeadTier.SIGNAL, True
     elif spec.include_icp_only and sc.fit >= settings.icp_only_min_fit:
         tier = LeadTier.ICP_ONLY  # qualifies on fit alone; delivered on its own, clearly labelled sheet
     elif AliveProof.RECENT_DATED_SIGNAL not in proofs:
@@ -272,7 +345,10 @@ async def _qualify(
     else:
         raise CandidateRejectedError(f"score {sc.total} below {settings.qualify_score}: {sc.why}", score=sc)
 
-    people = await _decision_makers(spec, deps, guards, bundle, ext, record) if spec.wants_contacts else []
+    # A watchlist lead is never sent to the paid email finders: it did not qualify.
+    wanted = spec.wants_contacts and not watchlist
+    with usage_tags(stage="contacts"):
+        people = await _decision_makers(spec, deps, guards, bundle, ext, record) if wanted else []
     decision = pack.outreach_decision(record)
     lead = LeadResult(
         lead_id=lead_id,
@@ -297,11 +373,14 @@ async def _qualify(
         people=people,
         tier=tier,
         contacts_wanted=spec.wants_contacts,
+        watchlist=watchlist,
     )
     # Drafts need a genuine dated hook; an ICP-only lead has none, so no email is written (no invented urgency).
     if spec.personalized_email and decision.allowed and tier == LeadTier.SIGNAL:
         for p in lead.verified_people:
-            if draft := await write_draft(p, ext, sc, spec, deps.llm, today):
+            with usage_tags(stage="draft"):
+                draft = await write_draft(p, ext, sc, spec, deps.llm, today)
+            if draft:
                 lead.drafts[(p.first_name, p.last_name)] = draft
     return lead
 
@@ -393,17 +472,18 @@ async def run_job(
 
     try:
         try:
-            candidates = await discover(
-                spec,
-                deps.serper,
-                deps.llm,
-                exclude,
-                math.ceil(spec.count * settings.overfetch_factor),
-                stats_out=query_stats,
-                today=today,
-                sources={"agent": deps.agent} if deps.agent else None,
-                board_checker=board_checker_for(deps.fetcher),
-            )
+            with usage_tags(stage="discovery"):
+                candidates = await discover(
+                    spec,
+                    deps.serper,
+                    deps.llm,
+                    exclude,
+                    math.ceil(spec.count * settings.overfetch_factor),
+                    stats_out=query_stats,
+                    today=today,
+                    sources={"agent": deps.agent} if deps.agent else None,
+                    board_checker=board_checker_for(deps.fetcher),
+                )
         except (CostCapExceededError, LLMRefusalError) as exc:
             # The cap, or the model provider having a bad minute. Neither is a reason to throw away the
             # companies discovery already resolved: research them and report the shortfall honestly.
@@ -420,13 +500,16 @@ async def run_job(
             async with sem:
                 if stop.is_set():
                     return
+                origin = candidate_origin(c)
                 try:
-                    lead = await process_candidate(c, spec, deps, today, f"L{job_id}-{i:03d}", guards)
+                    with usage_tags(channel=origin.channel, domain=c.domain):
+                        lead = await process_candidate(c, spec, deps, today, f"L{job_id}-{i:03d}", guards)
                     # Persisted immediately: durable before any later crash, not batched to job end.
                     # Sync DB I/O runs off the event loop so other workers' fetches keep moving.
-                    lead.contact_ids = await asyncio.to_thread(_persist_lead, job_id, lead, country)
+                    lead.contact_ids = await asyncio.to_thread(_persist_lead, job_id, lead, country, origin)
                 except CandidateRejectedError as r:
-                    await _reject(job_id, c.domain, country, str(r), summary, r.score)
+                    _note_check(guards, c.domain, f"rejected: {str(r)[:120]}", r.score)
+                    await _reject(job_id, c.domain, country, str(r), summary, r.score, origin, r.evidence)
                     return
                 except CostCapExceededError as exc:
                     stop.set()
@@ -436,11 +519,13 @@ async def run_job(
                     return
                 except Exception as exc:  # one bad site must not kill the job
                     logger.exception("candidate %s failed", c.domain)
-                    await _reject(job_id, c.domain, country, f"error: {type(exc).__name__}: {exc}", summary)
+                    reason = f"error: {type(exc).__name__}: {exc}"
+                    await _reject(job_id, c.domain, country, reason, summary, origin=origin)
                     return
                 finally:
                     # The console shows spend live; without this it sat at the drafting cost for the whole run.
                     await asyncio.to_thread(_save_cost, job_id, cost)
+                _note_check(guards, c.domain, "watchlist" if lead.watchlist else "lead", lead.score)
                 leads.append(lead)
                 # Stop once enough SIGNAL leads are deliverable (a verified contact, or just the signal in a
                 # signals-only run). ICP-only leads only fill the gap left when candidates run out; counting
@@ -452,6 +537,7 @@ async def run_job(
                     stop.set()
 
         await asyncio.gather(*(worker(i, c) for i, c in enumerate(candidates, 1)))
+        summary.research_check = [r.as_dict() for r in guards.checks.values()]
         leads = await _revalidate_before_delivery(job_id, leads, deps, today, spec, summary, len(candidates))
         _finalize(job_id, spec, leads, candidates, query_stats, cost, summary, None, today, out_dir)
     except (
@@ -482,11 +568,13 @@ async def _revalidate_before_delivery(
 ) -> list[LeadResult]:
     """Fresh re-check of every deliverable lead's buying signs; leads whose signs are all gone are held
     back and recorded as dropped on revalidation, with the reason."""
-    deliverable = [lead for lead in leads if lead.deliverable]
+    # Watchlist leads are delivered on their own sheet, so their signs are re-checked the same way.
+    deliverable = [lead for lead in leads if lead.deliverable or lead.watchlist]
     if not deliverable:
         return leads
     await asyncio.to_thread(_set_status, job_id, JobStatus.REVALIDATING, {"candidates": candidates})
-    dropped = await revalidate(deliverable, deps.fetcher, today, spec.freshness_days)
+    with usage_tags(stage="revalidate"):
+        dropped = await revalidate(deliverable, deps.fetcher, today, spec.freshness_days)
     if not dropped:
         return leads
     gone = {id(deliverable[i]): reason for i, reason in dropped.items()}
@@ -539,21 +627,24 @@ def _finalize(
         )
         gap = max(0, spec.count - len(qualified))
         icp_only, icp_unneeded = icp_ranked[:gap], icp_ranked[gap:]
-        no_contact = [lead for lead in leads if not lead.deliverable]
+        no_contact = [lead for lead in leads if not lead.deliverable and not lead.watchlist]
+        watchlist = sorted((lead for lead in leads if lead.watchlist), key=rank_key)
         deliver = qualified + icp_only + no_contact
         if summary.status == JobStatus.DONE and len(qualified) + len(icp_only) < spec.count:
             summary.status = JobStatus.DONE_WITH_SHORTFALL
         # Produce the complete deliverable before claiming that any lead was
         # sent. `write_outputs` publishes each file atomically, so a failed
         # workbook/CSV cannot poison the never-repeat delivery registry.
-        summary.outputs = write_outputs(deliver, spec, today, out_dir, job_id)
+        summary.outputs = write_outputs(deliver + watchlist, spec, today, out_dir, job_id)
         job = s.get(Job, job_id)
+        # The watchlist is on the sheet but not recorded as delivered: never-repeat must not bury a company
+        # that may qualify in a later run.
         store.record_deliveries(s, job, [(lead, lead.contact_ids) for lead in deliver])
         if icp_unneeded:  # stored as leads but not delivered: record them as such, so every count agrees
             reason = "ICP-only, not needed: signal leads met the target"
             store.mark_not_delivered(s, job_id, [lead.company_id for lead in icp_unneeded], reason)
             summary.rejected[reason] = summary.rejected.get(reason, 0) + len(icp_unneeded)
-        for tier_leads in (qualified, icp_only):  # each sheet ranks from 1, as the export does
+        for tier_leads in (qualified, icp_only, watchlist):  # each sheet ranks from 1, as the export does
             store.set_ranks(s, job_id, [lead.company_id for lead in tier_leads])
         job.status = summary.status
         job.error = error
@@ -564,12 +655,15 @@ def _finalize(
             "qualified": len(qualified),
             "icp_only": len(icp_only),
             "no_contact": len(no_contact),
+            "watchlist": len(watchlist),
             "rejected": summary.rejected,
+            **({"research_check": summary.research_check} if summary.research_check else {}),
             "stopped_by_cap": summary.stopped_by_cap,
             "discovery_queries": query_stats,
         }
         job.finished_at = datetime.now(UTC)
     summary.qualified, summary.icp_only, summary.no_contact = len(qualified), len(icp_only), len(no_contact)
+    summary.watchlist = len(watchlist)
     summary.cost_inr = round(cost.spent_inr, 2)
 
 
@@ -583,10 +677,10 @@ async def _close(deps: Deps) -> None:
             await client.aclose()
 
 
-def _persist_lead(job_id: int, lead: LeadResult, country: str) -> dict:
+def _persist_lead(job_id: int, lead: LeadResult, country: str, origin: Origin | None = None) -> dict:
     with session_scope() as s:
         try:
-            return store.save_lead(s, s.get(Job, job_id), lead, country)
+            return store.save_lead(s, s.get(Job, job_id), lead, country, origin)
         except SuppressedError as exc:
             raise CandidateRejectedError(str(exc)) from exc
 
@@ -608,13 +702,22 @@ def _save_cost(job_id: int, cost: CostTracker) -> None:
         logger.exception("could not record running cost for job %s", job_id)
 
 
-def _save_rejection(job_id: int, domain: str, country: str, reason: str, score) -> None:
+def _save_rejection(
+    job_id: int, domain: str, country: str, reason: str, score, origin: Origin | None, evidence
+) -> None:
     with session_scope() as s:
-        store.save_rejection(s, s.get(Job, job_id), domain, country, reason, score)
+        store.save_rejection(s, s.get(Job, job_id), domain, country, reason, score, origin, evidence)
 
 
 async def _reject(
-    job_id: int, domain: str, country: str, reason: str, summary: RunSummary, score=None
+    job_id: int,
+    domain: str,
+    country: str,
+    reason: str,
+    summary: RunSummary,
+    score=None,
+    origin: Origin | None = None,
+    evidence: list | None = None,
 ) -> None:
     key = reason.split(":")[0].split(" (")[0][:60]
     if key.startswith("score "):
@@ -623,6 +726,6 @@ async def _reject(
     if not domain:
         return  # never resolved to a website: nothing to key a company record on
     try:
-        await asyncio.to_thread(_save_rejection, job_id, domain, country, reason, score)
+        await asyncio.to_thread(_save_rejection, job_id, domain, country, reason, score, origin, evidence)
     except Exception:  # the audit row is best-effort; failing to write it must not fail the whole job
         logger.exception("could not record rejection of %s", domain)

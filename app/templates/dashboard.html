@@ -87,6 +87,25 @@
   {% endif %}
 </div>
 
+<div class="card">
+  <div class="card-head"><h2>{{ m.icon('target') }}Is the score right?</h2>
+    <span class="spacer"></span><span class="hint">From your ratings · {{ calibration.rated }} rated · bar {{ calibration.threshold }}</span></div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Score</th><th class="n">Good</th><th class="n">Wrong company</th><th class="n">Wrong intent</th><th class="n">Wrong contact</th><th class="n">Good share</th></tr></thead>
+    <tbody>
+      {% for b in calibration.bands %}
+      <tr><td class="small">{{ b.label }}</td><td class="n small">{{ b.good }}</td><td class="n small">{{ b.wrong_company }}</td>
+        <td class="n small">{{ b.wrong_intent }}</td><td class="n small">{{ b.wrong_contact }}</td>
+        <td class="n small">{{ (b.precision * 100) | round | int ~ '%' if b.precision is not none else '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="card-foot muted small">{% for note in calibration.notes %}<p>{{ note }}</p>{% endfor %}
+    {% if calibration.suggested %}<p><b>Suggested bar: {{ calibration.suggested }}</b> (nothing changes until you set it).</p>{% endif %}</div>
+</div>
+
 <div class="cols-3 card-body">
   <div class="feature">
     <h3><span class="ico">{{ m.icon('quote') }}</span>A quote, not a summary</h3>

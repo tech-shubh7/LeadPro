@@ -31,7 +31,7 @@ from app.services.intake_service import (
     sells_capacity,
     stored_output_mode,
 )
-from app.utils.cost_tracker import CostTracker
+from app.utils.cost_tracker import CostTracker, usage_tags
 from app.utils.logger import get_logger
 from app.utils.normalize import normalize_domain
 
@@ -154,7 +154,8 @@ async def draft(job_id: int) -> None:
     cost = CostTracker(cap)
     fetcher = Fetcher()
     try:
-        plan = await draft_plan(website, ask, count, country, _llm(cost), fetcher, name, client_key=key)
+        with usage_tags(stage="plan"):
+            plan = await draft_plan(website, ask, count, country, _llm(cost), fetcher, name, client_key=key)
         plan.freshness_days, plan.personalized_email = freshness, emails
         plan.include_icp_only, plan.cost_cap_inr = icp_only, cap
         plan.output_mode = output_mode

@@ -45,3 +45,15 @@ eval *args:
 # A standalone run worker (set EMBEDDED_WORKER=false for the web server when you use these)
 worker:
     uv run python -m worker.run_worker
+
+# Which discovery source produces qualified leads (database only, no paid calls): just sources --job 28
+sources *args:
+    uv run leadpro sources {{args}}
+
+# Does the score match your lead ratings? Suggests a bar once 20+ leads are rated (database only)
+calibrate:
+    uv run leadpro calibrate
+
+# Proof of selective reading for a run made with RESEARCH_CHECK=true: just research-check 29
+research-check job:
+    uv run leadpro research-check {{job}}

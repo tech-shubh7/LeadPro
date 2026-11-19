@@ -5,7 +5,7 @@
 {% set stage_of = {'queued': 1, 'discovering': 1, 'researching': 2, 'scoring': 3, 'finding_contacts': 4, 'revalidating': 4,
                    'done': 6, 'done_with_shortfall': 6} %}
 {% set stage = stage_of.get(job.status, 0) %}
-{% set found = [(job.progress or {}).get('candidates', 0) or 0, counts.qualified + counts.icp_only + counts.no_contact + counts.rejected] | max %}
+{% set found = [(job.progress or {}).get('candidates', 0) or 0, counts.qualified + counts.icp_only + counts.no_contact + counts.watchlist + counts.rejected] | max %}
 
 <nav class="crumbs"><a href="/">Runs</a><span class="sep">/</span><span>{{ job.client_name }}</span></nav>
 
@@ -82,6 +82,7 @@
     <div class="lead"><div class="label"><span class="key k-q"></span>Ready to contact</div><div class="value" data-live="qualified">{{ counts.qualified }}</div></div>
     <div><div class="label"><span class="key k-n"></span>Good fit, no email found</div><div class="value" data-live="no_contact">{{ counts.no_contact }}</div></div>
     <div><div class="label"><span class="key k-i"></span>Good fit, no buying sign</div><div class="value" data-live="icp_only">{{ counts.icp_only }}</div></div>
+    <div><div class="label"><span class="key k-n"></span>Watchlist (near miss)</div><div class="value" data-live="watchlist">{{ counts.watchlist }}</div></div>
     <div><div class="label"><span class="key k-r"></span>Not a match</div><div class="value" data-live="rejected">{{ counts.rejected }}</div></div>
     <div><div class="label">Companies checked</div><div class="value" data-live="candidates">{{ found }}</div></div>
   </div>
@@ -92,7 +93,7 @@
   {% for verdict, n in feedback.items() %}<b>{{ n }}</b> {{ {'good': 'good', 'wrong_company': 'wrong company', 'wrong_intent': 'wrong intent', 'wrong_contact': 'wrong contact'}[verdict] }}{{ '' if loop.last else ' · ' }}{% endfor %}</p>
 {% endif %}
 <nav class="tabs" aria-label="Sections">
-  <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='leads') }}" class="{{ 'on' if tab == 'leads' }}">Leads <span class="count">{{ counts.qualified + counts.icp_only + counts.no_contact }}</span></a>
+  <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='leads') }}" class="{{ 'on' if tab == 'leads' }}">Leads <span class="count">{{ counts.qualified + counts.icp_only + counts.no_contact + counts.watchlist }}</span></a>
   <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='rejected') }}" class="{{ 'on' if tab == 'rejected' }}">Not a match <span class="count">{{ counts.rejected }}</span></a>
   <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='method') }}" class="{{ 'on' if tab == 'method' }}">Plan &amp; spend</a>
 </nav>
@@ -108,6 +109,7 @@
         <option value="">Any tier</option>
         <option value="signal" {{ 'selected' if tier == 'signal' }}>Buying sign</option>
         <option value="icp_only" {{ 'selected' if tier == 'icp_only' }}>Good fit, no sign</option>
+        <option value="watchlist" {{ 'selected' if tier == 'watchlist' }}>Watchlist (near miss)</option>
       </select>
       <select name="contact" aria-label="Contact">
         <option value="">Any contact</option>
@@ -136,6 +138,7 @@
             <span class="avatar {{ 'accent' if r.lead.lead_tier == 'signal' }}">{{ (r.company.name or r.company.domain) | initials }}</span>
             <div>
               <a class="cell-main" href="/leads/{{ r.lead.id }}">{{ r.company.name or r.company.domain }}</a>
+              {% if r.lead.status == 'watchlist' %}<span class="pill" title="A fresh buying sign, but the score was just under the bar: not a qualified lead">Watchlist</span>{% endif %}
               {% if rated.get(r.lead.id) %}<span class="pill {{ 'pill-ok' if rated[r.lead.id] == 'good' else 'pill-bad' }}">{{ {'good': 'Good', 'wrong_company': 'Wrong company', 'wrong_intent': 'Wrong intent', 'wrong_contact': 'Wrong contact'}[rated[r.lead.id]] }}</span>{% endif %}
               <div class="cell-sub"><span class="mono">{{ r.company.domain }}</span>
                 {% if r.company.registry_id %} · <span title="Company registry match">{{ m.icon('check') }}{{ r.company.registry_status or 'registered' }}</span>{% endif %}</div>
@@ -214,6 +217,30 @@
   {% endif %}
 </div>
 </div>
+{% if sources and sources.rows %}
+<div class="card">
+  <div class="card-head"><h2>{{ m.icon('funnel') }}Where companies came from</h2>
+    <span class="spacer"></span><span class="hint">Which source finds companies that qualify</span></div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Source</th><th class="n">Researched</th><th class="n" title="No source dated inside the window, so rejected before any model call">Skipped free</th>
+      <th class="n">Scored</th><th class="n" title="Rejected, but scored 50 or more">Near misses</th><th class="n" title="Fresh sign, score just under the bar">Watchlist</th><th class="n">Qualified</th><th class="n">Rated good</th><th class="n" title="Research spend on this source's companies">Cost</th><th class="n" title="Research spend per lead or watchlist company">Per kept</th></tr></thead>
+    <tbody>
+      {% for r in sources.rows %}
+      <tr><td class="small">{{ r.channel | title_case }}</td><td class="n small">{{ r.found }}</td>
+        <td class="n small">{{ r.skipped_before_model }}</td><td class="n small">{{ r.scored }}</td>
+        <td class="n small">{{ r.near_misses }}</td><td class="n small">{{ r.watchlist }}</td><td class="n small">{{ r.qualified }}</td>
+        <td class="n small">{{ r.approved }}{% if r.disputed %} <span class="dim">({{ r.disputed }} disputed)</span>{% endif %}</td>
+        <td class="n small">{{ r.cost_inr | inr if r.cost_inr else '—' }}</td><td class="n small">{{ r.cost_per_kept | inr if r.cost_per_kept else '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="card-foot muted small">Finding candidates (plan and search) cost {{ sources.shared_cost_inr | inr }}, shared by every source{% if sources.untagged_cost_inr %}; {{ sources.untagged_cost_inr | inr }} is from before costs were split by source{% endif %}. The run cost {{ sources.cost_inr | inr }}
+    {%- if sources.qualified %} · {{ sources.cost_per(sources.qualified) | inr }} per qualified lead{% endif %}
+    {%- if sources.approved %} · {{ sources.cost_per(sources.approved) | inr }} per lead rated good{% endif %}.</div>
+</div>
+{% endif %}
 
 {% else %}
 <div class="cols">

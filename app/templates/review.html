@@ -209,6 +209,10 @@
         <span><span class="lbl">Write a first email for each person</span><span class="help">Based on their buying sign. Contacts mode only.</span></span>
       </label>
       <label class="check">
+        <input type="checkbox" name="include_watchlist" value="true" {{ 'checked' if plan.include_watchlist }}>
+        <span><span class="lbl">Keep near misses on a Watchlist sheet</span><span class="help">Companies with a real, dated buying sign that scored just under the bar. Not counted as leads, no contacts looked up.</span></span>
+      </label>
+      <label class="check">
         <input type="checkbox" name="include_icp_only" value="true" {{ 'checked' if plan.include_icp_only }}>
         <span><span class="lbl">Also include good-fit companies with no buying sign</span><span class="help">Listed separately, so you always know which is which. Contacts mode only.</span></span>
       </label>

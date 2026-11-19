@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # "openai" | "gemini" | "manual" (hybrid: LLM steps answered via work/llm_tasks files)
     llm_mode: str = "openai"
     llm_max_page_chars: int = 15000  # page text shown to the LLM per source (verification uses full text)
+    # Pages that cannot hold a qualifying signal (undated or dated before the window) only add background
+    # facts or evidence against buying, so the model reads this much of each (extraction_service.build_sources).
+    llm_supporting_page_chars: int = 3000
+    # Proof runs only: also read every company's pages the old, full way and compare (research_check_service).
+    # Roughly doubles the model cost of researching each company, so it is off for normal runs.
+    research_check: bool = False
     llm_extract_model: str = "gpt-6-luna"
     llm_judge_model: str = "gpt-6.1-terra"
     # Used when llm_mode is "gemini". Same split: a cheap model for high-volume extraction and triage,
@@ -70,6 +76,11 @@ class Settings(BaseSettings):
     freshness_days: int = 90
     max_freshness_days: int = 365
     qualify_score: int = 70
+    # Watchlist: a lead with a fresh verified signal scoring at least this (but under qualify_score), from a
+    # company fitting at least watchlist_min_fit of 40. Calibrated on jobs 26-28 (2026-11-18): keeps the
+    # 55-65 agencies with real hiring signs, leaves out WPP (fit 23: too large to buy outside capacity).
+    watchlist_min_score: int = 55
+    watchlist_min_fit: int = 25
     icp_only_min_fit: int = 32  # of 40: ICP-only leads (no signal) qualify on firmographic fit alone
     max_decision_makers: int = 2
     page_cache_ttl_hours: int = 24

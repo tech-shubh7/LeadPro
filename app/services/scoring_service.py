@@ -6,6 +6,7 @@ from datetime import date
 
 from pydantic import BaseModel, Field
 
+from app.config.settings import get_settings
 from app.providers.llm.llm_provider import LLMProvider
 from app.schemas.job_spec_schema import JobSpec
 from app.services.extraction_service import Extraction
@@ -126,4 +127,14 @@ async def score(
         out.outreach_angle,
         out.risks,
         [c for c in out.cited_evidence_ids if c in ids],
+    )
+
+
+def on_watchlist(sc: Score, spec: JobSpec) -> bool:
+    """Under the bar, but close, from a company that fits (the caller has checked for a fresh signal)."""
+    settings = get_settings()
+    return (
+        spec.include_watchlist
+        and settings.watchlist_min_score <= sc.total < settings.qualify_score
+        and sc.fit >= settings.watchlist_min_fit
     )

@@ -13,6 +13,7 @@ flight, so the cap is still never crossed.
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from app.exceptions.custom_exceptions import CostCapExceededError
@@ -24,6 +25,26 @@ class UsageLine:
     operation: str
     units: float
     cost_inr: float
+    # What the call was for, from usage_tags(): the pipeline step ("extract", "score", ...), the discovery
+    # channel of the company being researched, and its domain. Empty on lines recorded before tagging.
+    stage: str = ""
+    channel: str = ""
+    domain: str = ""
+
+
+# Set by the run around each step and each company. A context variable, so every concurrent worker (an
+# asyncio task with its own copy of the context) tags its own calls without passing anything down.
+_TAGS: ContextVar[dict[str, str]] = ContextVar("usage_tags", default={})  # noqa: B039 - never mutated
+
+
+@contextmanager
+def usage_tags(**tags: str) -> Iterator[None]:
+    """Tags every usage line recorded inside the block (nested blocks add to or override outer tags)."""
+    token = _TAGS.set({**_TAGS.get(), **tags})
+    try:
+        yield
+    finally:
+        _TAGS.reset(token)
 
 
 @dataclass
@@ -86,4 +107,15 @@ class CostTracker:
                 self._settled.notify_all()
 
     def record(self, provider: str, operation: str, units: float, cost_inr: float) -> None:
-        self.lines.append(UsageLine(provider, operation, units, cost_inr))
+        tags = _TAGS.get()
+        self.lines.append(
+            UsageLine(
+                provider,
+                operation,
+                units,
+                cost_inr,
+                tags.get("stage", ""),
+                tags.get("channel", ""),
+                tags.get("domain", ""),
+            )
+        )

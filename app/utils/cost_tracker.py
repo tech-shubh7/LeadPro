@@ -30,6 +30,20 @@ class UsageLine:
     stage: str = ""
     channel: str = ""
     domain: str = ""
+    # Model calls only: where the tokens went. Output costs 5x input, and reasoning is billed as output, so
+    # the split (not the total) says what to cut. Zero on non-model lines and on lines saved before the split.
+    input_tokens: int = 0
+    cached_tokens: int = 0  # part of input_tokens, billed at the cached price
+    output_tokens: int = 0  # includes reasoning_tokens
+    reasoning_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class TokenSplit:
+    input: int = 0
+    cached: int = 0
+    output: int = 0  # visible answer + reasoning
+    reasoning: int = 0
 
 
 # Set by the run around each step and each company. A context variable, so every concurrent worker (an
@@ -106,8 +120,11 @@ class CostTracker:
                 self.reserved_inr -= estimate_inr
                 self._settled.notify_all()
 
-    def record(self, provider: str, operation: str, units: float, cost_inr: float) -> None:
+    def record(
+        self, provider: str, operation: str, units: float, cost_inr: float, tokens: TokenSplit | None = None
+    ) -> None:
         tags = _TAGS.get()
+        split = tokens or TokenSplit()
         self.lines.append(
             UsageLine(
                 provider,
@@ -117,5 +134,9 @@ class CostTracker:
                 tags.get("stage", ""),
                 tags.get("channel", ""),
                 tags.get("domain", ""),
+                split.input,
+                split.cached,
+                split.output,
+                split.reasoning,
             )
         )

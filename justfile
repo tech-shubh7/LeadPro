@@ -57,3 +57,7 @@ calibrate:
 # Proof of selective reading for a run made with RESEARCH_CHECK=true: just research-check 29
 research-check job:
     uv run leadpro research-check {{job}}
+
+# Where a run's model spend went, per step (input / cached / output / reasoning tokens, ₹): just usage 29
+usage job:
+    uv run leadpro usage {{job}}

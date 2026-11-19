@@ -24,7 +24,7 @@ from pydantic import BaseModel, ValidationError
 from app.config.settings import get_settings
 from app.exceptions.custom_exceptions import LLMRefusalError
 from app.providers.llm.openai_provider import DATA_GUARD, T, wrap_data
-from app.utils.cost_tracker import CostTracker
+from app.utils.cost_tracker import CostTracker, TokenSplit
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -216,6 +216,7 @@ class GeminiProvider:
                     answered,
                     resp.usage_metadata.total_token_count or 0,
                     self._price_inr(answered, resp.usage_metadata),
+                    _split(resp.usage_metadata),
                 )
         parsed = resp.parsed
         if isinstance(parsed, schema):
@@ -242,3 +243,13 @@ def is_configured() -> bool:
 
 
 __all__ = ["BaseModel", "GeminiProvider", "is_configured"]
+
+
+def _split(usage) -> TokenSplit:
+    thoughts = usage.thoughts_token_count or 0
+    return TokenSplit(
+        usage.prompt_token_count or 0,
+        getattr(usage, "cached_content_token_count", 0) or 0,
+        (usage.candidates_token_count or 0) + thoughts,
+        thoughts,
+    )

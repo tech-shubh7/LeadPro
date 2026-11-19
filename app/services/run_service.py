@@ -301,6 +301,10 @@ async def _qualify(
         raise CandidateRejectedError(
             f"registry status '{record.status}' ({record.registry} {record.registry_id})"
         )
+    if not spec.include_icp_only and not fresh_signals(ext, today, spec.freshness_days):
+        # No fresh signal: rejected whatever the intent check says, so the call is skipped. It only ever
+        # changed the wording of this reason ("no buying intent: ..." for an old in-house statement).
+        raise CandidateRejectedError(f"no verified buying sign dated within {spec.freshness_days} days")
     seed_kinds = {hit.link: hit.kind for hit in bundle.seed_hits}
     with usage_tags(stage="intent"):
         assessment = await assess_signals(

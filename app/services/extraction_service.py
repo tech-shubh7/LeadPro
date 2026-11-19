@@ -16,11 +16,17 @@ from app.services.source_service import FIRST_PARTY_KINDS, POSTING_KINDS
 from app.utils.dates import TrustedDate, extract_page_date, parse_event_date, parse_relative_date
 from app.utils.evidence_verifier import Claim, canonical_url, normalize_text, phrase_near_quote, verify_claims
 
+# Output costs 5x input (jobs 24-28: 18% of the tokens, 56% of the spend), so answers are kept short:
+# a claim in a few words, the shortest exact quote that proves it, and only the facts the judge uses.
+MAX_FACTS = 8
+
 
 class QuotedFact(BaseModel):
-    claim: str
+    claim: str = Field(description="One short sentence, at most 15 words")
     source_url: str
-    quote: str = Field(description="Exact text copied from the source, at least 6 words")
+    quote: str = Field(
+        description="The shortest exact text copied from the source that proves the claim: 6 to 40 words"
+    )
 
 
 class QuotedSignal(QuotedFact):
@@ -58,7 +64,8 @@ class ExtractOut(BaseModel):
     company_description: str
     is_recruitment_or_staffing_firm: bool
     facts: list[QuotedFact] = Field(
-        description="Firmographics: industry, location, size, products, customers"
+        description=f"At most {MAX_FACTS} firmographic facts that matter for fit: industry, location, size, "
+        "products, customers"
     )
     signals: list[QuotedSignal]
     people: list[QuotedPerson]
@@ -273,8 +280,8 @@ async def extract(
         llm.extract_model,
         f"{target}. First decide whether the sources are about this target (set sources_match_target=false if the "
         "website belongs to an unrelated organisation with a similar name). Extract facts about the company whose website is "
-        f"{bundle.domain}. Every item must cite the source url it came from and quote the exact text "
-        "(copied verbatim, at least 6 words). Do not use outside knowledge. Signals are recent events that "
+        f"{bundle.domain}. Every item must cite the source url it came from and quote the shortest exact text "
+        "that proves it (copied verbatim, 6 to 40 words). Keep claims short. Do not use outside knowledge. Signals are recent events that "
         f"suggest buying intent; classify them as one of: {signal_types}, or 'other'. For each signal, copy the "
         "stated date of the event itself if the source gives one (an article can be new while the event is old), "
         "and give the same event_key to every source describing the same event. " + people,

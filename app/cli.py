@@ -322,6 +322,43 @@ def sources(
     )
 
 
+@cli.command()
+def usage(job: int = typer.Argument(..., help="Job id")) -> None:
+    """Where one run's model spend went, per step: calls, input / cached / output / reasoning tokens, ₹.
+    Reads the database only. Runs before 2026-11-19 have totals but no split."""
+    from app.config.database import session_scope
+    from app.models import Job
+
+    with session_scope() as s:
+        found = s.get(Job, job)
+        if found is None:
+            typer.echo(f"No job {job}")
+            raise typer.Exit(1)
+        lines = list(found.cost_lines or [])
+    rows: dict[str, list[float]] = {}
+    for line in lines:
+        if line.get("provider") not in ("openai", "gemini"):
+            continue
+        r = rows.setdefault(line.get("stage") or "untagged", [0, 0, 0, 0, 0, 0, 0.0])
+        r[0] += 1
+        r[1] += line.get("units") or 0
+        r[2] += line.get("input_tokens") or 0
+        r[3] += line.get("cached_tokens") or 0
+        r[4] += line.get("output_tokens") or 0
+        r[5] += line.get("reasoning_tokens") or 0
+        r[6] += line.get("cost_inr") or 0.0
+    typer.echo(
+        f"{'step':<15}{'calls':>6}{'total':>10}{'input':>10}{'cached':>9}{'output':>9}{'reasoning':>11}{'₹':>8}"
+    )
+    for stage, r in sorted(rows.items(), key=lambda kv: -kv[1][6]):
+        typer.echo(
+            f"{stage:<15}{int(r[0]):>6}{int(r[1]):>10,}{int(r[2]):>10,}{int(r[3]):>9,}{int(r[4]):>9,}"
+            f"{int(r[5]):>11,}{r[6]:>8.2f}"
+        )
+    total = [sum(r[i] for r in rows.values()) for i in range(7)]
+    typer.echo(f"{'total':<15}{int(total[0]):>6}{int(total[1]):>10,}{'':>48}{total[6]:>8.2f}")
+
+
 @cli.command("research-check")
 def research_check(
     job: int = typer.Argument(..., help="Job id of a run made with RESEARCH_CHECK=true"),

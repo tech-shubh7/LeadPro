@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.config.settings import get_settings
 from app.exceptions.custom_exceptions import LLMRefusalError
-from app.utils.cost_tracker import CostTracker
+from app.utils.cost_tracker import CostTracker, TokenSplit
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -83,9 +83,21 @@ class OpenAIProvider:
                 reasoning={"effort": effort},
                 max_output_tokens=max_output_tokens,
             )
-            self.cost.record("openai", model, resp.usage.total_tokens, self._price_inr(model, resp.usage))
+            self.cost.record(
+                "openai",
+                model,
+                resp.usage.total_tokens,
+                self._price_inr(model, resp.usage),
+                _split(resp.usage),
+            )
         if resp.status == "incomplete":
             raise LLMRefusalError(f"incomplete response: {resp.incomplete_details}")
         if resp.output_parsed is None:
             raise LLMRefusalError("model returned no parsed output (refusal or empty)")
         return resp.output_parsed
+
+
+def _split(usage) -> TokenSplit:
+    cached = getattr(getattr(usage, "input_tokens_details", None), "cached_tokens", 0) or 0
+    reasoning = getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", 0) or 0
+    return TokenSplit(usage.input_tokens or 0, cached, usage.output_tokens or 0, reasoning)

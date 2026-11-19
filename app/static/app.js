@@ -3,6 +3,17 @@
 (() => {
   "use strict";
 
+  // A number box keeps focus after typing, and the browser then turns a scroll over it into "change the
+  // number": job 29 was started with 25 days and ₹61 after 30 and ₹77 were typed. Scrolling must scroll.
+  document.addEventListener(
+    "wheel",
+    (e) => {
+      const t = e.target;
+      if (t instanceof HTMLInputElement && t.type === "number" && t === document.activeElement) t.blur();
+    },
+    { passive: true },
+  );
+
   const BAR_STEP = 5; // CSS width classes come in 5% steps (w0 … w100)
   const STAGE = { queued: 1, discovering: 1, researching: 2, scoring: 3, finding_contacts: 4, revalidating: 4,
                   done: 6, done_with_shortfall: 6 };

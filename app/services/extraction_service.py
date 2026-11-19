@@ -279,7 +279,8 @@ async def extract(
     out = await llm.parse(
         llm.extract_model,
         f"{target}. First decide whether the sources are about this target (set sources_match_target=false if the "
-        "website belongs to an unrelated organisation with a similar name). Extract facts about the company whose website is "
+        "website belongs to an unrelated organisation with a similar name, or is a news site, blog or directory "
+        "that writes ABOUT the target rather than the target's own website). Extract facts about the company whose website is "
         f"{bundle.domain}. Every item must cite the source url it came from and quote the shortest exact text "
         "that proves it (copied verbatim, 6 to 40 words). Keep claims short. Do not use outside knowledge. Signals are recent events that "
         f"suggest buying intent; classify them as one of: {signal_types}, or 'other'. For each signal, copy the "

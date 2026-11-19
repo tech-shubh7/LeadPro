@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -371,7 +372,65 @@ class QueryStat:
     rejected_types: dict = field(default_factory=dict)
 
 
+# Words that describe what a company is rather than which company it is. Picking one as the name to look
+# for matched a publisher's article: for "Brave Bison Commerce" the longest word was "commerce", and a news
+# headline "PJH Appoints Brave Bison Commerce ..." on roastbrief.us passed as the agency's site (job 29).
+GENERIC_NAME_WORDS = frozenset(
+    {
+        "commerce",
+        "ecommerce",
+        "digital",
+        "agency",
+        "agencies",
+        "media",
+        "marketing",
+        "studio",
+        "studios",
+        "solutions",
+        "creative",
+        "design",
+        "designs",
+        "web",
+        "software",
+        "technologies",
+        "technology",
+        "tech",
+        "consulting",
+        "consultancy",
+        "consultants",
+        "services",
+        "service",
+        "global",
+        "international",
+        "partners",
+        "interactive",
+        "labs",
+        "systems",
+        "holdings",
+        "enterprises",
+        "industries",
+        "network",
+        "networks",
+        "online",
+        "development",
+        "developers",
+        "communications",
+        "advertising",
+        "production",
+        "productions",
+        "ventures",
+        "innovation",
+        "innovations",
+        "works",
+        "collective",
+        "worldwide",
+    }
+)
+
+
 def _distinctive_token(name: str) -> str | None:
+    """The word that identifies this company: the longest one that is not a generic business word. None when
+    the name is only generic words ("Digital Agency"): no lookup is safer than a wrong one."""
     stop = {
         "the",
         "and",
@@ -387,8 +446,21 @@ def _distinctive_token(name: str) -> str | None:
         "brand",
         "brands",
     }
-    tokens = [t for t in re.findall(r"[a-z0-9]+", name.lower()) if t not in stop and len(t) >= 3]
+    tokens = [
+        t
+        for t in re.findall(r"[a-z0-9]+", name.lower())
+        if t not in stop and t not in GENERIC_NAME_WORDS and len(t) >= 3
+    ]
     return max(tokens, key=len) if tokens else None
+
+
+def _is_site_page(link: str) -> bool:
+    """A company's own page (home, /about, /en), not an article: at most one short path segment. An
+    article URL carries its headline as a long slug."""
+    segments = [seg for seg in urlparse(link).path.split("/") if seg]
+    return len(segments) == 0 or (
+        len(segments) == 1 and len(segments[0]) <= 30 and segments[0].count("-") <= 3
+    )
 
 
 def _domain_names(link: str, company_name: str) -> bool:
@@ -414,8 +486,9 @@ async def resolve_domain_options(
         and not is_third_party(d)
         and (
             token in d.replace("-", "")
-            # a title-only match must not be a listing page about the company
-            or (token in h.title.lower() and not LISTING_WORDS.search(h.title))
+            # A title-only match must be a page of the site itself, not a listing page or an article about
+            # the company on someone else's site (a publisher's headline names the company too).
+            or (token in h.title.lower() and not LISTING_WORDS.search(h.title) and _is_site_page(h.link))
         )
     ]
     # Prefer results that also describe the right kind of business ('TRIP' the drinks brand, not trip.com).

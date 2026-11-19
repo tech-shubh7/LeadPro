@@ -4,6 +4,7 @@ from app.config.settings import get_settings
 from app.providers.llm.gemini_provider import GeminiProvider
 from app.providers.llm.llm_cache import CachingLLMProvider
 from app.providers.llm.llm_provider import LLMProvider
+from app.providers.llm.llm_trace import TraceSink, TracingLLMProvider
 from app.providers.llm.manual_provider import ManualLLMProvider
 from app.providers.llm.openai_provider import OpenAIProvider
 from app.utils.cost_tracker import CostTracker
@@ -20,12 +21,17 @@ def has_credentials(mode: str) -> bool:
     return {"openai": bool(settings.openai_api_key), "gemini": bool(settings.gemini_api_key)}.get(mode, True)
 
 
-def create_llm(cost: CostTracker, mode: str | None = None, cache: bool = True) -> LLMProvider:
+def create_llm(
+    cost: CostTracker, mode: str | None = None, cache: bool = True, trace_sink: TraceSink | None = None
+) -> LLMProvider:
+    """`trace_sink` receives every call (prompt, answer, tokens, price, time) when tracing is on."""
     settings = get_settings()
     mode = mode or settings.llm_mode
     if mode not in _PROVIDERS:
         raise ValueError(f"llm mode must be one of {LLM_MODES}, got {mode!r}")
     provider = _PROVIDERS[mode](cost)
     if cache and mode != "manual" and settings.llm_cache_days > 0:  # manual mode keeps its own answer files
-        return CachingLLMProvider(provider, settings.llm_cache_days)
+        provider = CachingLLMProvider(provider, settings.llm_cache_days)
+    if trace_sink is not None and settings.trace_llm_calls:  # outermost: a cached answer is traced too
+        provider = TracingLLMProvider(provider, trace_sink, settings.trace_max_chars)
     return provider

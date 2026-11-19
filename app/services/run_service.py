@@ -43,6 +43,7 @@ from app.providers.search.search_client import SearchClient
 from app.providers.search.search_client_factory import create_search_client
 from app.providers.web.page_fetcher import Fetcher
 from app.repositories import lead_repository as store
+from app.repositories import trace_repository
 from app.schemas.job_spec_schema import JobSpec
 from app.services.contact_service import attach_emails, rank_decision_makers
 from app.services.discovery_service import GL, Candidate, Origin, candidate_origin, discover
@@ -153,7 +154,7 @@ class RunSummary:
 def default_deps(cost: CostTracker, spec: JobSpec, llm_mode: str | None = None) -> Deps:
     return Deps(
         create_search_client(cost),
-        create_llm(cost, llm_mode),
+        create_llm(cost, llm_mode, trace_sink=trace_repository.save_call),
         Fetcher(),
         # A signals-only run never looks anyone up: no paid email finder is even constructed.
         create_email_finders(cost) if spec.wants_contacts else [],
@@ -473,6 +474,9 @@ async def run_job(
     candidates: list[Candidate] = []
     query_stats: list[dict] = []
     stop = asyncio.Event()
+    # Every call in this run (in every worker task, which copy this context) is traced under this job.
+    run_tags = usage_tags(job_id=str(job_id))
+    run_tags.__enter__()
 
     try:
         try:
@@ -558,6 +562,7 @@ async def run_job(
             logger.exception("job %s: could not record the failure state either", job_id)
     finally:  # clients are closed even on cancellation (Ctrl-C), not only on a normal or failed finish
         await _close(deps)
+        run_tags.__exit__(None, None, None)
     return summary
 
 

@@ -9,6 +9,7 @@ from app.models.evidence import Evidence
 from app.models.job import Job
 from app.models.job_lead import JobLead
 from app.models.lead_feedback import LeadFeedback
+from app.models.llm_call import LlmCall
 from app.models.source_document import SourceDocument
 from app.models.suppression import Suppression
 
@@ -21,5 +22,6 @@ __all__ = [
     "Evidence",
     "Job",
     "JobLead",
+    "LlmCall",
     "Suppression",
 ]

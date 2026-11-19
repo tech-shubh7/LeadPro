@@ -51,6 +51,25 @@ class TokenSplit:
 _TAGS: ContextVar[dict[str, str]] = ContextVar("usage_tags", default={})  # noqa: B039 - never mutated
 
 
+# Set by the tracing wrapper around one model call: every usage line recorded during that call is also
+# collected here, so the trace carries that call's exact tokens and price (not a neighbour's).
+_CAPTURE: ContextVar[list | None] = ContextVar("usage_capture", default=None)
+
+
+def current_tags() -> dict[str, str]:
+    return dict(_TAGS.get())
+
+
+@contextmanager
+def capture_usage() -> Iterator[list]:
+    lines: list = []
+    token = _CAPTURE.set(lines)
+    try:
+        yield lines
+    finally:
+        _CAPTURE.reset(token)
+
+
 @contextmanager
 def usage_tags(**tags: str) -> Iterator[None]:
     """Tags every usage line recorded inside the block (nested blocks add to or override outer tags)."""
@@ -125,18 +144,19 @@ class CostTracker:
     ) -> None:
         tags = _TAGS.get()
         split = tokens or TokenSplit()
-        self.lines.append(
-            UsageLine(
-                provider,
-                operation,
-                units,
-                cost_inr,
-                tags.get("stage", ""),
-                tags.get("channel", ""),
-                tags.get("domain", ""),
-                split.input,
-                split.cached,
-                split.output,
-                split.reasoning,
-            )
+        line = UsageLine(
+            provider,
+            operation,
+            units,
+            cost_inr,
+            tags.get("stage", ""),
+            tags.get("channel", ""),
+            tags.get("domain", ""),
+            split.input,
+            split.cached,
+            split.output,
+            split.reasoning,
         )
+        self.lines.append(line)
+        if (captured := _CAPTURE.get()) is not None:
+            captured.append(line)

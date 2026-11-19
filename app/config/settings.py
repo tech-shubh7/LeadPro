@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # Proof runs only: also read every company's pages the old, full way and compare (research_check_service).
     # Roughly doubles the model cost of researching each company, so it is off for normal runs.
     research_check: bool = False
+    # Observability: every model call is stored with its prompt, answer, tokens, price and time (llm_calls
+    # table, shown on each run's Trace tab). Prompts can hold page text that names people, so traces are kept
+    # trace_keep_days and then deleted at start-up, like the page cache.
+    trace_llm_calls: bool = True
+    trace_max_chars: int = 20000  # per stored prompt input / answer
+    trace_keep_days: int = 30
     llm_extract_model: str = "gpt-6-luna"
     llm_judge_model: str = "gpt-6.1-terra"
     # Used when llm_mode is "gemini". Same split: a cheap model for high-volume extraction and triage,

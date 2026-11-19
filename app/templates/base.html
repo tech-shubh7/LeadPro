@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="light">
 <title>{% block title %}LeadPro{% endblock %}</title>
 <link rel="stylesheet" href="/static/app.css?v={{ v }}">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%235b4ff5'/><stop offset='1' stop-color='%238b5cf6'/></linearGradient></defs><rect width='32' height='32' rx='9' fill='url(%23g)'/><circle cx='15' cy='15' r='6.5' fill='none' stroke='white' stroke-width='2.6'/><path d='M20 20l5 5' stroke='white' stroke-width='2.6' stroke-linecap='round'/></svg>">
@@ -17,6 +17,7 @@
   <nav>
     <a href="/" class="{{ 'on' if nav == 'runs' }}">Runs</a>
     <a href="/new" class="{{ 'on' if nav == 'new' }}">New</a>
+    <a href="/observability" class="{{ 'on' if nav == 'observability' }}">Observability</a>
     <a href="/suppressions" class="{{ 'on' if nav == 'suppressions' }}">Compliance</a>
   </nav>
 </header>
@@ -31,6 +32,7 @@
       <div class="nav-label">Workspace</div>
       <a href="/" class="{{ 'on' if nav == 'runs' }}"><svg class="i"><use href="#i-grid"/></svg>Runs</a>
       <a href="/new" class="{{ 'on' if nav == 'new' }}"><svg class="i"><use href="#i-spark"/></svg>New run</a>
+      <a href="/observability" class="{{ 'on' if nav == 'observability' }}"><svg class="i"><use href="#i-layers"/></svg>Observability</a>
       <a href="/suppressions" class="{{ 'on' if nav == 'suppressions' }}"><svg class="i"><use href="#i-shield"/></svg>Compliance</a>
     </nav>
     <div class="side-foot">

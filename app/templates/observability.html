@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Observability · LeadPro{% endblock %}
+{% block content %}
+<div class="head">
+  <div>
+    <div class="eyebrow">Workspace</div>
+    <h1>Observability</h1>
+    <div class="sub">Every paid call across every run: tokens, cost, time, and the exact prompt and answer of each model call.</div>
+  </div>
+</div>
+<div class="stats">
+  {{ m.stat("Total spend", total.total.cost_inr | inr, "model calls " ~ (total.models.cost_inr | inr) ~ " · other services " ~ (total.other_inr | inr), lead=True, ico="coin") }}
+  {{ m.stat("Model tokens", total.models.tokens | num, (total.models.calls | num) ~ " paid calls · " ~ total.cache_hits ~ " reused free", ico="layers") }}
+  {{ m.stat("Output share of model spend", ((total.output_share_of_spend * 100) | round | int ~ '%') if total.output_share_of_spend is not none else "—", "from runs with the token split", ico="bolt") }}
+  {{ m.stat("Time per call", ('%.1f' | format(stats.avg_ms / 1000)) ~ 's' if stats.calls else "—", (stats.calls | num) ~ " traced calls · " ~ stats.errors ~ " errors", ico="clock") }}
+</div>
+<div class="card">
+  <div class="card-head"><h2>{{ m.icon('funnel') }}By step</h2><span class="spacer"></span><span class="hint">Every paid call in every run</span></div>
+  {{ m.usage_table(total.by_stage, "Step", total.has_split) }}
+</div>
+<div class="card">
+  <div class="card-head"><h2>{{ m.icon('layers') }}By model</h2></div>
+  {{ m.usage_table(total.by_model, "Model", total.has_split, raw=True) }}
+</div>
+<div class="cols">
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('globe') }}By service</h2></div>
+    {{ m.usage_table(total.by_provider, "Service", False) }}
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('target') }}How it is set up</h2></div>
+    <div class="card-body">
+      <dl class="kv">
+        {% for k, v in config %}<div><dt>{{ k }}</dt><dd class="mono small">{{ v }}</dd></div>{% endfor %}
+      </dl>
+    </div>
+  </div>
+</div>
+<div class="card">
+  <div class="card-head"><h2>{{ m.icon('grid') }}Runs</h2><span class="spacer"></span><span class="hint">Latest {{ runs | length }}</span></div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Run</th><th>Client</th><th>Started</th><th class="n">Model calls</th><th class="n">Tokens</th><th class="n">Output</th><th class="n">Model cost</th><th class="n">Total cost</th><th></th></tr></thead>
+    <tbody>
+      {% for r in runs %}
+      <tr class="clickable" data-href="/jobs/{{ r.job.id }}?tab=trace">
+        <td class="small">{{ r.job.id }}</td><td class="small">{{ r.job.client_name }}<div class="cell-sub">{{ r.job.ask | trunc(60) }}</div></td>
+        <td class="small nowrap">{{ r.job.created_at.strftime('%d %b %H:%M') }}</td>
+        <td class="n small">{{ r.usage.models.calls | num }}</td><td class="n small">{{ r.usage.models.tokens | num }}</td>
+        <td class="n small">{{ r.usage.models.output | num if r.usage.has_split else '—' }}</td>
+        <td class="n small">{{ r.usage.models.cost_inr | inr }}</td><td class="n small">{{ r.job.cost_inr | inr }}</td>
+        <td class="n"><a class="btn btn-sm" href="/jobs/{{ r.job.id }}?tab=trace">Trace{{ m.icon('chev') }}</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+<div class="card">
+  <div class="card-head"><h2>{{ m.icon('search') }}Latest model calls</h2><span class="spacer"></span><span class="hint">Open one to see its prompt and answer</span></div>
+  {% if recent %}{{ m.calls_table(recent, show_job=True) }}{% else %}<div class="card-body"><p class="muted">No traced calls yet. Every model call is traced from 19 Nov 2026 on.</p></div>{% endif %}
+</div>
+{% endblock %}

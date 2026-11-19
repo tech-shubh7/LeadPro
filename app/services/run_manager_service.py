@@ -22,7 +22,7 @@ from app.models.enums import JobStatus, OutputMode
 from app.providers.llm.llm_factory import create_llm, has_credentials
 from app.providers.llm.llm_provider import LLMProvider
 from app.providers.web.page_fetcher import Fetcher
-from app.repositories import run_queue_repository
+from app.repositories import run_queue_repository, trace_repository
 from app.schemas.job_spec_schema import JobSpec
 from app.services.intake_service import (
     draft_plan,
@@ -104,7 +104,7 @@ def _llm(cost: CostTracker) -> LLMProvider | None:
     """The provider for the console's own LLM step, or None when it has no credentials (the plan then
     falls back to a generic template the operator edits)."""
     mode = get_settings().llm_mode
-    return create_llm(cost, mode) if has_credentials(mode) else None
+    return create_llm(cost, mode, trace_sink=trace_repository.save_call) if has_credentials(mode) else None
 
 
 def create_draft_job(
@@ -154,7 +154,7 @@ async def draft(job_id: int) -> None:
     cost = CostTracker(cap)
     fetcher = Fetcher()
     try:
-        with usage_tags(stage="plan"):
+        with usage_tags(stage="plan", job_id=str(job_id)):
             plan = await draft_plan(website, ask, count, country, _llm(cost), fetcher, name, client_key=key)
         plan.freshness_days, plan.personalized_email = freshness, emails
         plan.include_icp_only, plan.cost_cap_inr = icp_only, cap

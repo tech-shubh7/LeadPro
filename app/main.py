@@ -23,6 +23,7 @@ from app.config.templates import STATIC_DIR, asset_version
 from app.exceptions.handlers import register_exception_handlers
 from app.middlewares.request_guard import request_guard
 from app.providers.web.page_fetcher import prune_page_cache
+from app.repositories import trace_repository
 from app.routes.index import console_router
 from app.services import run_manager_service
 from app.services.run_worker_service import RunWorker
@@ -36,6 +37,8 @@ async def _recover_interrupted_work() -> None:
     await run_in_threadpool(run_manager_service.sweep_orphans, True)
     if removed := await run_in_threadpool(prune_page_cache):
         logger.info("pruned %d expired cached page(s)", removed)
+    if removed := await run_in_threadpool(trace_repository.prune_traces):
+        logger.info("pruned %d expired model-call trace(s)", removed)
     for job_id in await run_in_threadpool(run_manager_service.orphaned_drafts):
         logger.warning("resuming the plan draft for job %s, interrupted by a restart", job_id)
         run_manager_service.start_draft(job_id)

@@ -96,6 +96,7 @@
   <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='leads') }}" class="{{ 'on' if tab == 'leads' }}">Leads <span class="count">{{ counts.qualified + counts.icp_only + counts.no_contact + counts.watchlist }}</span></a>
   <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='rejected') }}" class="{{ 'on' if tab == 'rejected' }}">Not a match <span class="count">{{ counts.rejected }}</span></a>
   <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact']).include_query_params(tab='method') }}" class="{{ 'on' if tab == 'method' }}">Plan &amp; spend</a>
+  <a href="{{ request.url.remove_query_params(['page', 'q', 'tier', 'contact', 'step', 'company']).include_query_params(tab='trace') }}" class="{{ 'on' if tab == 'trace' }}">Trace</a>
 </nav>
 
 {% if tab == 'leads' %}
@@ -241,6 +242,50 @@
     {%- if sources.approved %} · {{ sources.cost_per(sources.approved) | inr }} per lead rated good{% endif %}.</div>
 </div>
 {% endif %}
+
+{% elif tab == 'trace' %}
+<div class="stats">
+  {{ m.stat("Run cost", job.cost_inr | inr, "model calls " ~ (usage.models.cost_inr | inr) ~ " · other services " ~ (usage.other_inr | inr), lead=True, ico="coin") }}
+  {{ m.stat("Model tokens", usage.models.tokens | num, (usage.models.calls | num) ~ " paid calls · " ~ usage.cache_hits ~ " answers reused free", ico="layers") }}
+  {{ m.stat("Output share of model spend", ((usage.output_share_of_spend * 100) | round | int ~ '%') if usage.output_share_of_spend is not none else "—", "output costs 5× input; reasoning counts as output" if usage.has_split else "token split recorded from 19 Nov 2026", ico="bolt") }}
+  {{ m.stat("Time per call", ('%.1f' | format(call_stats.avg_ms / 1000)) ~ 's' if call_stats.calls else "—", ("slowest step: " ~ (call_stats.slowest_stage | title_case) ~ " · " ~ call_stats.errors ~ " errors") if call_stats.calls else "calls are traced from 19 Nov 2026", ico="clock") }}
+</div>
+<div class="card">
+  <div class="card-head"><h2>{{ m.icon('funnel') }}By step</h2><span class="spacer"></span><span class="hint">Every paid call in this run</span></div>
+  {{ m.usage_table(usage.by_stage, "Step", usage.has_split) }}
+</div>
+<div class="cols">
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('layers') }}By model</h2></div>
+    {{ m.usage_table(usage.by_model, "Model", False, raw=True) }}
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('globe') }}By service</h2></div>
+    {{ m.usage_table(usage.by_provider, "Service", False) }}
+  </div>
+</div>
+<div class="card">
+  <div class="card-head">
+    <h2>{{ m.icon('search') }}Every model call</h2>
+    <span class="spacer"></span>
+    <form method="get" class="filters">
+      <input type="hidden" name="tab" value="trace">
+      <select name="step" aria-label="Step">
+        <option value="">Every step</option>
+        {% for s in stages %}<option value="{{ s }}" {{ 'selected' if step == s }}>{{ (s or 'untagged') | title_case }}</option>{% endfor %}
+      </select>
+      <input type="search" name="company" value="{{ company }}" placeholder="Company domain…" aria-label="Company">
+      <button type="submit">Filter</button>
+      {% if step or company %}<a class="btn btn-ghost" href="/jobs/{{ job.id }}?tab=trace">Clear</a>{% endif %}
+    </form>
+  </div>
+  {% if calls.items %}
+  {{ m.calls_table(calls.items) }}
+  {{ m.pager(calls, request) }}
+  {% else %}
+  <div class="card-body"><p class="muted">No traced calls{% if step or company %} match that filter{% else %} for this run. Calls are traced (prompt, answer, tokens, time) from 19 Nov 2026; the tables above still show this run's spend{% endif %}.</p></div>
+  {% endif %}
+</div>
 
 {% else %}
 <div class="cols">

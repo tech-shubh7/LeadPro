@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Model call {{ c.id }} · LeadPro{% endblock %}
+{% block content %}
+<nav class="crumbs">
+  <a href="/observability">Observability</a><span class="sep">/</span>
+  {% if c.job_id %}<a href="/jobs/{{ c.job_id }}?tab=trace">Run {{ c.job_id }}</a><span class="sep">/</span>{% endif %}
+  <span>Call {{ c.id }}</span>
+</nav>
+<div class="head">
+  <div>
+    <div class="eyebrow">{{ (c.stage or 'untagged') | title_case }} · {{ c.schema_name }}</div>
+    <h1>{{ c.model }}{% if c.from_cache %} <span class="pill">answer reused from cache</span>{% endif %}</h1>
+    <div class="sub">{{ c.created_at.strftime('%d %b %Y, %H:%M:%S') }}{% if c.domain %} · researching <span class="mono">{{ c.domain }}</span>{% endif %}{% if c.channel %} · found via {{ c.channel | title_case }}{% endif %}</div>
+  </div>
+</div>
+<div class="stats">
+  {{ m.stat("Cost", c.cost_inr | inr, c.provider or "—", lead=True, ico="coin") }}
+  {{ m.stat("Input tokens", c.input_tokens | num, (c.cached_tokens | num) ~ " of them cached", ico="layers") }}
+  {{ m.stat("Output tokens", c.output_tokens | num, (c.reasoning_tokens | num) ~ " of them reasoning", ico="bolt") }}
+  {{ m.stat("Time taken", ('%.2f' | format(c.duration_ms / 1000)) ~ 's', "effort: " ~ (c.effort or '—'), ico="clock") }}
+</div>
+{% if c.status == 'error' %}
+<div class="note note-bad">{{ m.icon('alert') }}<div><b>The call failed.</b><pre class="trace-text">{{ c.error }}</pre></div></div>
+{% endif %}
+<div class="cols">
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('file') }}What the model was told</h2><span class="spacer"></span><span class="hint">{{ c.instructions | length | num }} characters</span></div>
+    <div class="card-body"><pre class="trace-text">{{ c.instructions }}</pre></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>{{ m.icon('check-circle') }}What it answered</h2><span class="spacer"></span><span class="hint">{{ c.output_text | length | num }} characters</span></div>
+    <div class="card-body">{% if c.output_text %}<pre class="trace-text">{{ c.output_text }}</pre>{% else %}<p class="muted">No answer.</p>{% endif %}</div>
+  </div>
+</div>
+<div class="card">
+  <div class="card-head"><h2>{{ m.icon('quote') }}What it was given</h2><span class="spacer"></span><span class="hint">{{ c.input_text | length | num }} characters{% if c.input_text | length >= max_chars %}, cut at {{ max_chars | num }} for storage{% endif %}</span></div>
+  <div class="card-body"><pre class="trace-text tall">{{ c.input_text }}</pre></div>
+</div>
+{% endblock %}

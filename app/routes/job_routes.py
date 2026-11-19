@@ -13,13 +13,13 @@ from app.exceptions.custom_exceptions import BadRequestError, NotFoundError
 from app.middlewares.csrf import check_csrf
 from app.models.enums import JobStatus
 from app.repositories import console_repository as repo
-from app.repositories import feedback_repository, run_queue_repository
+from app.repositories import feedback_repository, run_queue_repository, trace_repository
 from app.schemas.job_spec_schema import MAX_COST_CAP_INR
-from app.services import run_manager_service
+from app.services import observability_service, run_manager_service
 from app.services.export_service import job_files
 
 router = APIRouter(prefix="/jobs", tags=["Runs"])
-TABS = ("leads", "rejected", "method")
+TABS = ("leads", "rejected", "trace", "method")
 
 
 @router.get("/{job_id}", response_class=HTMLResponse)
@@ -32,6 +32,8 @@ def job_detail(
     contact: str = "",
     q: str = Query(""),
     tab: str = "leads",
+    step: str = "",
+    company: str = "",
 ) -> Response:
     job = repo.get_job(session, job_id)
     if job is None:
@@ -61,6 +63,12 @@ def job_detail(
         files=job_files(request.app.state.output_dir, job.client_key, job.id),
         plan=run_manager_service.plan_for_review(job),
         running=job.status in repo.RUNNING_STATUSES,
+        step=step,
+        company=company,
+        usage=observability_service.usage(job.cost_lines) if tab == "trace" else None,
+        calls=trace_repository.calls_page(session, job_id, page, step, company) if tab == "trace" else None,
+        call_stats=trace_repository.call_stats(session, job_id) if tab == "trace" else None,
+        stages=trace_repository.stages_for(session, job_id) if tab == "trace" else [],
     )
 
 

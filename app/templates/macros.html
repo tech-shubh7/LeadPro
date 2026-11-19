@@ -96,3 +96,49 @@
 {% elif tier == 'good' %}<span class="pill pill-accent" title="{{ summary }}">Good</span>
 {% elif tier == 'weak' %}<span class="pill pill-warn" title="{{ summary }}">Weak: budget only</span>{% endif %}
 {% endmacro %}
+
+{# --- observability ------------------------------------------------------------------------------- #}
+{% macro usage_table(buckets, first_col, split, raw=False) %}
+<div class="scroll">
+<table>
+  <thead><tr><th>{{ first_col }}</th><th class="n">Calls</th><th class="n">Tokens</th>
+    {% if split %}<th class="n">Input</th><th class="n" title="Part of input, billed at the cached price">Cached</th><th class="n" title="Includes reasoning">Output</th><th class="n">Reasoning</th>{% endif %}
+    <th class="n">Cost</th></tr></thead>
+  <tbody>
+    {% for b in buckets %}
+    <tr><td class="small{{ ' mono' if raw }}">{{ b.name if raw else (b.name | title_case) }}</td><td class="n small">{{ b.calls | num }}</td>
+      <td class="n small">{{ b.tokens | num if b.tokens else '—' }}</td>
+      {% if split %}<td class="n small">{{ b.input | num }}</td><td class="n small">{{ b.cached | num }}</td>
+      <td class="n small">{{ b.output | num }}</td><td class="n small">{{ b.reasoning | num }}</td>{% endif %}
+      <td class="n small">{{ b.cost_inr | inr }}</td></tr>
+    {% endfor %}
+    {% if not buckets %}<tr><td colspan="8" class="muted small">No paid calls recorded.</td></tr>{% endif %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}
+
+{% macro calls_table(calls, show_job=False) %}
+<div class="scroll">
+<table>
+  <thead><tr><th class="n">#</th>{% if show_job %}<th>Run</th>{% endif %}<th>Time</th><th>Step</th><th>Model</th><th>Company</th>
+    <th class="n">In</th><th class="n">Out</th><th class="n">Reasoning</th><th class="n">Cost</th><th class="n">Time taken</th><th></th></tr></thead>
+  <tbody>
+    {% for c in calls %}
+    <tr class="clickable" data-href="/calls/{{ c.id }}">
+      <td class="n small muted">{{ c.id }}</td>
+      {% if show_job %}<td class="small">{% if c.job_id %}<a href="/jobs/{{ c.job_id }}?tab=trace">Run {{ c.job_id }}</a>{% else %}—{% endif %}</td>{% endif %}
+      <td class="small nowrap">{{ c.created_at.strftime('%H:%M:%S') }}</td>
+      <td class="small">{{ (c.stage or '—') | title_case }}</td>
+      <td class="small mono">{{ c.model }}{% if c.from_cache %} <span class="pill">cached</span>{% endif %}</td>
+      <td class="small mono">{{ c.domain or '—' }}</td>
+      <td class="n small">{{ c.input_tokens | num }}</td><td class="n small">{{ c.output_tokens | num }}</td>
+      <td class="n small">{{ c.reasoning_tokens | num }}</td><td class="n small">{{ c.cost_inr | inr }}</td>
+      <td class="n small">{{ '%.1f' | format(c.duration_ms / 1000) }}s</td>
+      <td class="n">{% if c.status == 'error' %}<span class="pill pill-bad">error</span>{% else %}<a class="btn btn-sm" href="/calls/{{ c.id }}">Open{{ icon('chev') }}</a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}

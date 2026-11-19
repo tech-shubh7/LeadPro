@@ -89,8 +89,10 @@ async def write_draft(
     )
     signature = (sender.signature or sender.name) if sender else spec.client.name
     for _ in range(2):  # one retry if the first draft is not grounded
+        # The cheap model: on 3 real leads (2026-11-19) its drafts matched the judge's and all passed
+        # draft_is_grounded, which still rejects any draft citing a fact or number not in the evidence.
         out = await llm.parse(
-            llm.judge_model, COLD_EMAIL_RULES, data, DraftOut, effort="medium", max_output_tokens=3000
+            llm.extract_model, COLD_EMAIL_RULES, data, DraftOut, effort="medium", max_output_tokens=3000
         )
         if draft_is_grounded(out, listing_by_id, sender_text):
             return Draft(

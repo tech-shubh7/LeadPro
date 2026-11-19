@@ -494,8 +494,11 @@ async def plan_queries(spec: JobSpec, llm: LLMProvider, stats: list[QueryStat], 
         )
         or "(none yet)"
     )
+    # The cheap model: side by side on job 29's ask (2026-11-19, fresh and with job 28's history) it wrote
+    # queries as good as the judge's, at a tenth of the price. A weak query only wastes one search: triage
+    # and every later check still decide who becomes a lead.
     out = await llm.parse(
-        llm.judge_model,
+        llm.extract_model,
         "You plan Google searches that surface SPECIFIC companies matching the ICP and currently showing one of the "
         f"buying signals. Write {n} new queries. Prefer queries that return the companies themselves or news about "
         "named companies (trade press, regional business news, funding/expansion/launch announcements, company "

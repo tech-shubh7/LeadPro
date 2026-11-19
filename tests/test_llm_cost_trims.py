@@ -156,3 +156,48 @@ def test_the_usage_command_splits_a_run_by_step(clean_db):
     assert extract.split()[1:6] == ["1", "3,900", "3,000", "1,024", "900"]
     assert "untagged" in out.output
     assert "discovery" not in out.output  # a search is not a model call
+
+
+def test_each_job_uses_the_model_the_side_by_side_test_chose():
+    """2026-11-19, same real inputs to both models: query planning and email drafts were as good on the cheap
+    model and move to it; scoring stays on the judge (the cheap model scored ~8 points higher and flipped 4 of
+    10 decisions toward 'lead'), and so does plan drafting."""
+    from datetime import date
+
+    from app.services.contact_service import DecisionMaker
+    from app.services.discovery_service import QueryPlanOut, plan_queries
+    from app.services.draft_service import DraftOut, write_draft
+    from app.services.extraction_service import Extraction
+    from app.services.scoring_service import Score, score
+
+    used: dict[str, str] = {}
+
+    class Recorder:
+        extract_model, judge_model = "cheap", "judge"
+
+        async def parse(self, model, instructions, data, schema, effort="low", max_output_tokens=16000):
+            used[schema.__name__] = model
+            if schema is QueryPlanOut:
+                return QueryPlanOut(queries=[])
+            if schema is DraftOut:
+                return DraftOut(subject="s", body="b", cited_evidence_ids=[])
+            from app.services.scoring_service import ScoreOut
+
+            return ScoreOut(
+                fit_score=1,
+                intent_score=1,
+                timing_score=1,
+                why_this_lead="w",
+                outreach_angle="a",
+                risks="r",
+                cited_evidence_ids=[],
+            )
+
+    spec = e2e._spec()
+    ext = Extraction("Acme", "d", False)
+    llm = Recorder()
+    asyncio.run(plan_queries(spec, llm, [], 3))
+    dm = DecisionMaker("Jane", "Roe", "Director", None, "https://acme.co.uk/team", "Jane Roe, Director")
+    asyncio.run(write_draft(dm, ext, Score(1, 1, 1, "w", "a", "r", []), spec, llm, date(2026, 11, 19)))
+    asyncio.run(score(ext, spec, llm, date(2026, 11, 19)))
+    assert used == {"QueryPlanOut": "cheap", "DraftOut": "cheap", "ScoreOut": "judge"}

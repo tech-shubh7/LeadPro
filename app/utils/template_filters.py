@@ -126,7 +126,7 @@ def safe_url(value) -> str:
 
 def initials(value) -> str:
     text = str(value or "").strip()
-    if " " not in text and "." in text:  # a domain stands in for the name: "brightpathweb-example.com" -> "KR"
+    if " " not in text and "." in text:  # a domain stands in for the name: "brightpathweb-example.com" -> "BR"
         return text.split(".")[0][:2].upper() or "?"
     parts = [p for p in text.split() if p[:1].isalnum()]
     return "".join(p[0] for p in parts[:2]).upper() or "?"

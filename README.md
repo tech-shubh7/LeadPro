@@ -106,7 +106,7 @@ uv run leadpro run jobs/example_uk.yaml --llm openai --fresh   # writes output/<
 
 There are two workflows, both described in [docs/WORKFLOWS.md](docs/WORKFLOWS.md):
 - **`--llm openai`** needs `OPENAI_API_KEY` and runs unattended.
-- **`--llm manual`** needs no OpenAI key. The LLM steps are answered as task files, by Claude Code (`/leadpro-manual jobs/x.yaml`) or a person (`leadpro tasks / task / answer`).
+- **`--llm manual`** needs no OpenAI key. The LLM steps are answered as task files by a person or any AI assistant (`leadpro tasks / task / answer`).
 
 `--fresh` ignores the dev caches; use it for every client or demo run.
 

@@ -4,7 +4,7 @@ Both workflows run the same pipeline: the same searches, page fetches, Companies
 
 | | A. No OpenAI key (manual) | B. With OpenAI key |
 |---|---|---|
-| Who answers LLM steps | Claude Code (or a person) via task files | OpenAI API (GPT-6 Luna extracts, GPT-6.1 Terra judges) |
+| Who answers LLM steps | A person (or any AI assistant) via task files | OpenAI API (GPT-6 Luna extracts, GPT-6.1 Terra judges) |
 | Speed | Minutes per company, and someone must be present | Unattended, about 1–3 min per company |
 | LLM cost | ₹0 | About ₹2–4 per company researched |
 | Best for | Demos and pilots before an API key exists | Paid pilots and volume |
@@ -34,13 +34,7 @@ Add `--fresh` for any client or demo run. Without it, dev mode (`APP_ENV=dev`) r
 
 ## A. Without an OpenAI key (manual mode)
 
-From Claude Code in this repo, one command does everything:
-
-```
-/leadpro-manual jobs/your_job.yaml
-```
-
-The same thing by hand, in two terminals:
+Run it in two terminals:
 
 ```bash
 # terminal 1: the run waits at each LLM step

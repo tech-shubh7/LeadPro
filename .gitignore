@@ -8,3 +8,9 @@ output/
 work/
 prospects/
 evals/reports/
+
+# Private job files: only the examples are shared
+jobs/*
+!jobs/example_uk.yaml
+!jobs/run4_uk.yaml
+*.bundle

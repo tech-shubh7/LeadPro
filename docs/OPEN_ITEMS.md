@@ -122,7 +122,7 @@ Designed, NOT built:
 | 2026-10-30 | Data-handling hardening | Incremental per-lead persistence, failure handling that marks jobs FAILED with the error recorded, SAVEPOINT-based concurrency-safe upserts, suppression list wired into discovery + email attachment, `suppress`/`erase-person` CLI commands, 24 raw-SQL tests proving DB constraints hold independent of the ORM. See §6. |
 | 2026-10-30 | Agentic discovery | Query planning with yield feedback, batch triage of hits, prior-ranked research, per-company news search, blocked-site fallback, dev Serper cache, verified-email reuse. Design: `docs/RESEARCH_ENGINE.md` |
 | 2026-10-30 | Bot-protected sites | Never bypassed. Researched from news, registry and search results, flagged in `website_access` |
-| 2026-10-30 | Hybrid mode until an OpenAI key or paid pilot | `LLM_MODE=manual`: LLM steps are answered by Claude via `work/llm_tasks/` files; same schemas and quote checks; switch back with `LLM_MODE=openai`. Local Postgres on 5432 replaces Docker. |
+| 2026-10-30 | Hybrid mode until an OpenAI key or paid pilot | `LLM_MODE=manual`: LLM steps are answered via `work/llm_tasks/` files; same schemas and quote checks; switch back with `LLM_MODE=openai`. Local Postgres on 5432 replaces Docker. |
 | 2026-10-30 | Email finder | **Generect** (PAYG, $0.02 per found email via API, free on misses, no subscription). Fields verified from its OpenAPI spec. OrbiSearch dropped (charges for misses). |
 | 2026-10-30 | Waterfall | Not built for the MVP; the interface supports it; trigger is F9 |
 | 2026-10-30 | Good leads with no verified contact | Delivered in a separate sheet/CSV ("Good leads - no contact"), status `qualified_no_contact` |
